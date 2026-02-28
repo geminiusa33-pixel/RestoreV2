@@ -19,7 +19,7 @@ using System.IO;
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Identity;
 using System.Net;
-using API.Services;
+using API.Services.Invoicing;
 
 namespace API.Controllers;
 
@@ -32,6 +32,7 @@ public class OrdersController(
     IEmailService emailService,
     IOptions<EmailSettings> emailOptions,
     IInvoicePdfService invoicePdfService,
+    ITaxInvoiceService taxInvoiceService,
     IWebHostEnvironment env,
     UserManager<User> userManager,
     INotificationService notificationService,
@@ -534,6 +535,25 @@ public class OrdersController(
         return File(pdfBytes, "application/pdf", $"recibo-{order.Id}.pdf");
     }
 
+    [HttpGet("{id:int}/tax-invoice")]
+    public async Task<IActionResult> DownloadTaxInvoice(int id, CancellationToken ct)
+    {
+        var order = await context.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.BuyerEmail == User.GetEmail(), ct);
+
+        if (order == null) return NotFound();
+
+        if (order.OrderStatus == OrderStatus.Pending || order.OrderStatus == OrderStatus.PaymentFailed)
+            return BadRequest("Fatura indisponível para esta encomenda");
+
+        var pdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(order, ct);
+        if (pdf == null) return BadRequest("Fatura oficial indisponível (serviço de faturação não configurado ou falhou)");
+
+        return File(pdf.Content, pdf.ContentType, pdf.FileName);
+    }
+
     [Authorize(Roles = "Admin")]
     [HttpGet("all")]
     public async Task<ActionResult<List<OrderDto>>> GetAllSales([FromQuery] OrderAdminParams queryParams)
@@ -626,6 +646,26 @@ public class OrdersController(
 
         var pdfBytes = await invoicePdfService.GenerateReceiptPdfAsync(order, ct);
         return File(pdfBytes, "application/pdf", $"recibo-{order.Id}.pdf");
+    }
+
+    [Authorize(Roles = "Admin")]
+    [HttpGet("all/{id:int}/tax-invoice")]
+    public async Task<IActionResult> DownloadAnyTaxInvoice(int id, CancellationToken ct)
+    {
+        var order = await context.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+        if (order == null) return NotFound();
+
+        if (order.OrderStatus == OrderStatus.Pending || order.OrderStatus == OrderStatus.PaymentFailed)
+            return BadRequest("Fatura indisponível para esta encomenda");
+
+        var pdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(order, ct);
+        if (pdf == null) return BadRequest("Fatura oficial indisponível (serviço de faturação não configurado ou falhou)");
+
+        return File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     [Authorize(Roles = "Admin")]
@@ -942,9 +982,12 @@ public class OrdersController(
 
             if (fullOrder == null) return;
 
-            var pdfBytes = await invoicePdfService.GenerateReceiptPdfAsync(fullOrder, ct);
+            var receiptBytes = await invoicePdfService.GenerateReceiptPdfAsync(fullOrder, ct);
+            var taxPdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(fullOrder, ct);
 
-            var subject = $"Recibo da encomenda #{order.Id}";
+            var subject = taxPdf != null
+                ? $"Fatura e recibo da encomenda #{order.Id}"
+                : $"Recibo da encomenda #{order.Id}";
 
                         var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
                         var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
@@ -959,25 +1002,39 @@ public class OrdersController(
 
                         var btnOrder = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
 
+                        var heading = taxPdf != null ? "Fatura e recibo" : "Recibo";
+                        var body = taxPdf != null
+                            ? $"Segue em anexo a fatura (oficial) e o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>."
+                            : $"Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.";
+
                         var html = $"""
                                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                                    <h2>Recibo</h2>
-                                    <p>Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.</p>
+                                    <h2>{heading}</h2>
+                                    <p>{body}</p>
                                     {(string.IsNullOrWhiteSpace(btnOrder) ? string.Empty : $"<p style='margin:0 0 12px'>{btnOrder}</p>")}
                                     {orderSummary}
                                 </div>
                                 """;
 
-            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html,
-                new[]
+            var attachments = new List<EmailAttachment>();
+            if (taxPdf != null)
+            {
+                attachments.Add(new EmailAttachment
                 {
-                    new EmailAttachment
-                    {
-                        FileName = $"recibo-{order.Id}.pdf",
-                        ContentType = "application/pdf",
-                        Content = pdfBytes
-                    }
+                    FileName = taxPdf.FileName,
+                    ContentType = taxPdf.ContentType,
+                    Content = taxPdf.Content
                 });
+            }
+
+            attachments.Add(new EmailAttachment
+            {
+                FileName = $"recibo-{order.Id}.pdf",
+                ContentType = "application/pdf",
+                Content = receiptBytes
+            });
+
+            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html, attachments);
 
             if (!sent) return;
 
@@ -985,6 +1042,7 @@ public class OrdersController(
             if (toUpdate == null) return;
 
             toUpdate.ReceiptEmailedAt = DateTime.UtcNow;
+            if (taxPdf != null) toUpdate.TaxInvoiceEmailedAt = DateTime.UtcNow;
             await context.SaveChangesAsync(ct);
         }
         catch (Exception ex)
@@ -1817,6 +1875,14 @@ public class OrdersController(
                     OrderItems = items,
                     BuyerEmail = User.GetEmail(),
                     ShippingAddress = orderDto.ShippingAddress,
+                    BillingName = string.IsNullOrWhiteSpace(orderDto.BillingName) ? null : orderDto.BillingName.Trim(),
+                    BillingTaxId = string.IsNullOrWhiteSpace(orderDto.BillingTaxId) ? null : orderDto.BillingTaxId.Trim(),
+                    BillingLine1 = string.IsNullOrWhiteSpace(orderDto.BillingLine1) ? null : orderDto.BillingLine1.Trim(),
+                    BillingLine2 = string.IsNullOrWhiteSpace(orderDto.BillingLine2) ? null : orderDto.BillingLine2.Trim(),
+                    BillingCity = string.IsNullOrWhiteSpace(orderDto.BillingCity) ? null : orderDto.BillingCity.Trim(),
+                    BillingState = string.IsNullOrWhiteSpace(orderDto.BillingState) ? null : orderDto.BillingState.Trim(),
+                    BillingPostalCode = string.IsNullOrWhiteSpace(orderDto.BillingPostalCode) ? null : orderDto.BillingPostalCode.Trim(),
+                    BillingCountry = string.IsNullOrWhiteSpace(orderDto.BillingCountry) ? null : orderDto.BillingCountry.Trim(),
                     DeliveryFee = deliveryFee,
                     Subtotal = subtotal,
                     ProductDiscount = productDiscount,
@@ -1831,6 +1897,29 @@ public class OrdersController(
         else 
         {
             order.OrderItems = items;
+
+            // Keep billing details in sync if the client provided them.
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingName)) order.BillingName = orderDto.BillingName.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingTaxId)) order.BillingTaxId = orderDto.BillingTaxId.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingLine1)) order.BillingLine1 = orderDto.BillingLine1.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingLine2)) order.BillingLine2 = orderDto.BillingLine2.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingCity)) order.BillingCity = orderDto.BillingCity.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingState)) order.BillingState = orderDto.BillingState.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingPostalCode)) order.BillingPostalCode = orderDto.BillingPostalCode.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingCountry)) order.BillingCountry = orderDto.BillingCountry.Trim();
+        }
+
+        // If the buyer asked for a fiscal invoice (NIF) but didn't provide explicit billing address,
+        // default billing details to the shipping address. This keeps the payload minimal on the client.
+        if (!string.IsNullOrWhiteSpace(order.BillingTaxId))
+        {
+            order.BillingName ??= order.ShippingAddress.Name;
+            order.BillingLine1 ??= order.ShippingAddress.Line1;
+            order.BillingLine2 ??= order.ShippingAddress.Line2;
+            order.BillingCity ??= order.ShippingAddress.City;
+            order.BillingState ??= order.ShippingAddress.State;
+            order.BillingPostalCode ??= order.ShippingAddress.PostalCode;
+            order.BillingCountry ??= order.ShippingAddress.Country;
         }
         
         // verify payment intent status with Stripe so the order reflects payment status

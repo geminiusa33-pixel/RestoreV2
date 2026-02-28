@@ -83,6 +83,13 @@ public class InvoicePdfService(StoreContext context) : IInvoicePdfService
         gfx.DrawString($"Cliente: {order.BuyerEmail}", font, XBrushes.Black, new XRect(margin, y, page.Width - margin * 2, 14), XStringFormats.TopLeft);
         y += 18;
 
+        var customerTaxId = (order.BillingTaxId ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(customerTaxId))
+        {
+            gfx.DrawString($"NIF do cliente: {customerTaxId}", font, XBrushes.Black, new XRect(margin, y, page.Width - margin * 2, 14), XStringFormats.TopLeft);
+            y += 18;
+        }
+
         // Shipping address
         gfx.DrawString("Morada de envio", fontH, XBrushes.Black, new XRect(margin, y, page.Width - margin * 2, 14), XStringFormats.TopLeft);
         y += 14;

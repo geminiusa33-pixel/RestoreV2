@@ -28,6 +28,7 @@ export default function CheckoutStepper() {
     const [addressComplete, setAddressComplete] = useState(false);
     const [paymentComplete, setPaymentComplete] = useState(false);
     const [phone, setPhone] = useState('');
+    const [billingTaxId, setBillingTaxId] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const navigate = useNavigate();
     const [confirmationToken, setConfirmationToken] = useState<ConfirmationToken | null>(null);
@@ -120,7 +121,9 @@ export default function CheckoutStepper() {
             };
         }
 
-        return {shippingAddress, paymentSummary}
+        const nif = billingTaxId.trim();
+
+        return {shippingAddress, paymentSummary, billingTaxId: nif.length ? nif : null}
     }
 
     const getStripeAddress = async () => {
@@ -178,6 +181,15 @@ export default function CheckoutStepper() {
                         fullWidth
                         value={phone}
                         onChange={e => setPhone(e.target.value)}
+                        sx={{ mt: 2 }}
+                    />
+                    <TextField
+                        label="NIF (opcional)"
+                        fullWidth
+                        value={billingTaxId}
+                        onChange={e => setBillingTaxId(e.target.value)}
+                        helperText="Opcional — para emissão de fatura com NIF"
+                        inputProps={{ inputMode: 'numeric', maxLength: 20 }}
                         sx={{ mt: 2 }}
                     />
                     <FormControlLabel 

@@ -12,6 +12,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("EmailSettings"));
+builder.Services.Configure<InvoicingSettings>(builder.Configuration.GetSection("InvoicingSettings"));
 builder.Services.AddScoped<IEmailService, SendGridEmailService>();
 builder.Services.AddScoped<INewsletterSender, SendGridNewsletterSender>();
 builder.Services.AddHostedService<NewsletterDispatcher>();
@@ -40,6 +41,7 @@ builder.Services.AddScoped<PaymentsService>();
 builder.Services.AddScoped<ImageService>();
 builder.Services.AddScoped<DiscountService>();
 builder.Services.AddScoped<IInvoicePdfService, InvoicePdfService>();
+builder.Services.AddScoped<API.Services.Invoicing.ITaxInvoiceService, API.Services.Invoicing.TaxInvoiceService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<AccountDeletionService>();
 builder.Services.AddScoped<StripeReversalService>();

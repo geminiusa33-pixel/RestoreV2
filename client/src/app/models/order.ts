@@ -55,4 +55,6 @@ export interface Order {
   export interface CreateOrder {
     shippingAddress: ShippingAddress
     paymentSummary: PaymentSummary
+    // Optional billing data (Portugal - NIF/fiscal invoice)
+    billingTaxId?: string | null
   }

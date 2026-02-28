@@ -42,6 +42,8 @@ public class SendGridEmailService : IEmailService
             return false;
         }
 
+        htmlContent = EmailTemplate.TryWrap(_settings, htmlContent, preheader: subject);
+
         var client = new SendGridClient(_settings.SendGridApiKey);
         var from = new EmailAddress(_settings.FromEmail, _settings.FromName);
         var to = new EmailAddress(toEmail);
@@ -102,6 +104,8 @@ public class SendGridEmailService : IEmailService
             _logger.LogWarning("SendGrid email not sent: EmailSettings.FromEmail is not configured.");
             return false;
         }
+
+        htmlContent = EmailTemplate.TryWrap(_settings, htmlContent, preheader: subject);
 
         var client = new SendGridClient(_settings.SendGridApiKey);
         var from = new EmailAddress(_settings.FromEmail, _settings.FromName);

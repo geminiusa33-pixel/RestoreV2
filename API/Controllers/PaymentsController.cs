@@ -186,12 +186,25 @@ public class PaymentsController(
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var url = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/admin/sales/{order.Id}";
             var subject = $"[Venda] Pagamento recebido (Encomenda #{order.Id})";
+
+                        var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                        var meta = await context.Products
+                                .AsNoTracking()
+                                .Where(p => productIds.Contains(p.Id))
+                                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                                .ToListAsync();
+                        var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+                        var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+                        var btn = string.IsNullOrWhiteSpace(url) ? string.Empty : EmailTemplate.PrimaryButton(url, "Abrir venda");
+
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>Pagamento confirmado para a encomenda <strong>#{order.Id}</strong>.</p>
                   <p><strong>Cliente:</strong> {System.Net.WebUtility.HtmlEncode(order.BuyerEmail)}</p>
-                  {(string.IsNullOrWhiteSpace(url) ? string.Empty : $"<p>Ver venda: <a href=\"{url}\">{url}</a></p>")}
+                                    {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                                    {orderSummary}
                 </div>
                 """;
 
@@ -215,12 +228,24 @@ public class PaymentsController(
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
 
+            var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+            var meta = await context.Products
+                .AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                .ToListAsync();
+            var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+            var btn = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
+
             var subject = $"Encomenda #{order.Id}: Em processamento";
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>Pagamento confirmado. A sua encomenda <strong>#{order.Id}</strong> está a ser processada.</p>
-                  {(string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>")}
+                  {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                  {orderSummary}
                 </div>
                 """;
 
@@ -244,13 +269,24 @@ public class PaymentsController(
             var subject = $"Recibo da encomenda #{order.Id}";
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
-            var extra = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>";
+
+            var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+            var meta = await context.Products
+                .AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                .ToListAsync();
+            var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+            var btn = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
 
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                  <h2>Restore</h2>
+                  <h2>Recibo</h2>
                   <p>Pagamento confirmado. Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.</p>
-                  {extra}
+                  {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                  {orderSummary}
                 </div>
                 """;
 

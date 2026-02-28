@@ -1,4 +1,4 @@
-import { Box, FormControl, InputLabel, MenuItem, Select, SelectChangeEvent, Typography, Paper, Grid, Chip, Autocomplete, TextField } from '@mui/material';
+import { Box, FormControl, InputLabel, MenuItem, Select, SelectChangeEvent, Typography, Paper, Grid, Chip, Autocomplete, TextField, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
 import { subDays, subMonths, subYears } from 'date-fns';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -16,11 +16,14 @@ import {
 } from 'recharts';
 import { useFetchFiltersQuery } from '../catalog/catalogApi';
 import {
+  useAllSalesQuery,
   useClicksTimeSeriesQuery,
   useCorrelationQuery,
   useSalesAmountTimeSeriesQuery,
   useSalesTimeSeriesQuery,
+  useTopCommentsQuery,
   useTopClicksQuery,
+  useTopRatedQuery,
   useTopSoldQuery,
   type AnalyticsQuery,
 } from './analyticsApi';
@@ -102,6 +105,9 @@ export default function AdminAnalytics() {
 
   const { data: topSold = [] } = useTopSoldQuery(query);
   const { data: topClicks = [] } = useTopClicksQuery(query);
+  const { data: topComments = [] } = useTopCommentsQuery(query);
+  const { data: topRated = [] } = useTopRatedQuery(query);
+  const { data: allSales = [] } = useAllSalesQuery({ ...query, take: 5000 });
   const { data: salesSeries = [] } = useSalesTimeSeriesQuery(query);
   const { data: salesAmountSeries = [] } = useSalesAmountTimeSeriesQuery(query);
   const { data: clicksSeries = [] } = useClicksTimeSeriesQuery(query);
@@ -199,6 +205,49 @@ export default function AdminAnalytics() {
         </Grid>
 
         <Grid item xs={12} md={6}>
+          <Paper sx={{ p: 2, height: 360, display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>Mais comentados (Top 30)</Typography>
+            <MeasuredChart minHeight={260}>
+              {({ width, height }) => (
+                <BarChart width={width} height={height} data={topComments} layout="vertical" margin={{ left: 40, right: 20, top: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis type="category" dataKey="name" width={140} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="#2e7d32" />
+                </BarChart>
+              )}
+            </MeasuredChart>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} md={6}>
+          <Paper sx={{ p: 2, height: 360, display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>Melhor classificados (Top 30)</Typography>
+            <MeasuredChart minHeight={260}>
+              {({ width, height }) => (
+                <BarChart width={width} height={height} data={topRated} layout="vertical" margin={{ left: 40, right: 20, top: 10, bottom: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" domain={[0, 5]} tickCount={6} />
+                  <YAxis type="category" dataKey="name" width={140} />
+                  <Tooltip
+                    formatter={(v: any, name: any, props: any) => {
+                      if (name === 'averageRating') {
+                        const avg = typeof v === 'number' ? v : Number(v);
+                        const cnt = props?.payload?.ratingsCount;
+                        return [`${avg.toFixed(2)} (${cnt ?? 0} avaliações)`, 'Rating'];
+                      }
+                      return [v, name];
+                    }}
+                  />
+                  <Bar dataKey="averageRating" fill="#ed6c02" />
+                </BarChart>
+              )}
+            </MeasuredChart>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} md={6}>
           <Paper sx={{ p: 2, height: 320, display: 'flex', flexDirection: 'column' }}>
             <Typography variant="h6" sx={{ mb: 1 }}>Vendas no tempo</Typography>
             <MeasuredChart minHeight={220}>
@@ -269,6 +318,34 @@ export default function AdminAnalytics() {
                 </ScatterChart>
               )}
             </MeasuredChart>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12}>
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>Todos os produtos: nº de vendas</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Total histórico (SalesCount) por produto.
+            </Typography>
+
+            <TableContainer sx={{ maxHeight: 520 }}>
+              <Table stickyHeader size="small" aria-label="Tabela de vendas por produto">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Produto</TableCell>
+                    <TableCell align="right">Vendas</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {allSales.map((p) => (
+                    <TableRow key={p.productId} hover>
+                      <TableCell>{p.name}</TableCell>
+                      <TableCell align="right">{p.count}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </Paper>
         </Grid>
       </Grid>

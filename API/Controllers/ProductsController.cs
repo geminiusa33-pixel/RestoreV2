@@ -388,15 +388,29 @@ namespace API.Controllers
                 var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
                 var productUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/catalog/{review.ProductId}";
 
+                var product = await context.Products
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == review.ProductId);
+
+                var productName = product?.Name ?? $"Produto #{review.ProductId}";
+                var productDesc = (product?.Subtitle ?? product?.Description) ?? string.Empty;
+                var productCard = EmailTemplate.RenderProductHighlight(
+                    title: "Produto",
+                    name: productName,
+                    imageUrl: product?.PictureUrl,
+                    description: productDesc,
+                    productUrl: string.IsNullOrWhiteSpace(productUrl) ? null : productUrl,
+                    ctaText: "Ver produto");
+
                 var subject = $"Resposta à sua avaliação (Produto #{review.ProductId})";
                 var html = $"""
                     <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                      <h2>Restore</h2>
-                      <p>Recebeu uma resposta à sua avaliação:</p>
-                      <div style='white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; border-radius: 6px'>
-                        {System.Net.WebUtility.HtmlEncode(reply)}
-                      </div>
-                      {(string.IsNullOrWhiteSpace(productUrl) ? string.Empty : $"<p>Ver produto: <a href=\"{productUrl}\">{productUrl}</a></p>")}
+                                            <h2>Resposta à sua avaliação</h2>
+                                            {productCard}
+                                            <p style='margin:0 0 8px'>Recebeu uma resposta da nossa equipa:</p>
+                                            <div style='white-space: pre-wrap; border: 1px solid #e5e7eb; padding: 12px; border-radius: 12px; background: #f9fafb'>
+                                                {System.Net.WebUtility.HtmlEncode(reply)}
+                                            </div>
                     </div>
                     """;
 
@@ -434,18 +448,25 @@ namespace API.Controllers
                 var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
                 var productUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/catalog/{product.Id}";
 
+                var productCard = EmailTemplate.RenderProductHighlight(
+                    title: "Novo review",
+                    name: product.Name,
+                    imageUrl: product.PictureUrl,
+                    description: product.Subtitle ?? product.Description,
+                    productUrl: string.IsNullOrWhiteSpace(productUrl) ? null : productUrl,
+                    ctaText: "Abrir produto");
+
                 var subject = $"[Avaliação] Produto #{product.Id} - {product.Name}";
                 var html = $"""
                     <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                      <h2>Restore</h2>
-                      <p><strong>Nova avaliação</strong> do produto <strong>{System.Net.WebUtility.HtmlEncode(product.Name)}</strong>.</p>
+                                            <h2>Nova avaliação</h2>
+                                            {productCard}
                       <p><strong>Cliente:</strong> {System.Net.WebUtility.HtmlEncode(review.BuyerEmail)}</p>
                       <p><strong>Classificação:</strong> {review.Rating}/5</p>
                       <p><strong>Comentário:</strong></p>
-                      <div style='white-space: pre-wrap; border: 1px solid #ddd; padding: 8px; border-radius: 6px'>
+                                            <div style='white-space: pre-wrap; border: 1px solid #e5e7eb; padding: 12px; border-radius: 12px; background: #f9fafb'>
                         {System.Net.WebUtility.HtmlEncode(review.Comment)}
                       </div>
-                      {(string.IsNullOrWhiteSpace(productUrl) ? string.Empty : $"<p>Ver produto: <a href=\"{productUrl}\">{productUrl}</a></p>")}
                     </div>
                     """;
 

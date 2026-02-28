@@ -12,6 +12,34 @@ public class AnalyticsController(StoreContext context) : BaseApiController
     public record TimeSeriesPoint(DateTime Date, long Value);
     public record ProductCount(int ProductId, string Name, string? PictureUrl, long Count);
     public record ProductCorrelationPoint(int ProductId, string Name, string? PictureUrl, long Clicks, long Sales);
+    public record ProductRating(int ProductId, string Name, string? PictureUrl, double AverageRating, long RatingsCount);
+
+    [HttpGet("all-sales")]
+    public async Task<ActionResult<List<ProductCount>>> GetAllSales(
+        [FromQuery] string? categoryIds,
+        [FromQuery] int take = 5000)
+    {
+        var catIds = ParseIds(categoryIds);
+
+        var products = context.Products.AsNoTracking().AsQueryable();
+        if (catIds.Count > 0)
+        {
+            var filteredProductIds = await FilterProductIdsByCategories(catIds);
+            if (filteredProductIds == null || filteredProductIds.Count == 0)
+                return new List<ProductCount>();
+
+            products = products.Where(p => filteredProductIds.Contains(p.Id));
+        }
+
+        var res = await products
+            .OrderByDescending(p => p.SalesCount)
+            .ThenBy(p => p.Name)
+            .Select(p => new ProductCount(p.Id, p.Name, p.PictureUrl, p.SalesCount))
+            .Take(Math.Clamp(take, 1, 5000))
+            .ToListAsync();
+
+        return res;
+    }
 
     [HttpGet("top-sold")]
     public async Task<ActionResult<List<ProductCount>>> GetTopSold(
@@ -274,6 +302,89 @@ public class AnalyticsController(StoreContext context) : BaseApiController
         }).ToList();
 
         return result;
+    }
+
+    [HttpGet("top-comments")]
+    public async Task<ActionResult<List<ProductCount>>> GetTopComments(
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] string? categoryIds,
+        [FromQuery] int take = 30)
+    {
+        var (start, end) = NormalizeRange(from, to);
+        var catIds = ParseIds(categoryIds);
+        var filteredProductIds = await FilterProductIdsByCategories(catIds);
+
+        var q = context.ProductReviews
+            .AsNoTracking()
+            .Where(r => r.CreatedAt >= start && r.CreatedAt <= end);
+
+        if (filteredProductIds != null)
+            q = q.Where(r => filteredProductIds.Contains(r.ProductId));
+
+        var res = await q
+            .GroupBy(r => r.ProductId)
+            .Select(g => new { ProductId = g.Key, Count = g.LongCount() })
+            .OrderByDescending(x => x.Count)
+            .Take(Math.Clamp(take, 1, 200))
+            .ToListAsync();
+
+        var productIds = res.Select(x => x.ProductId).ToList();
+        var products = await context.Products
+            .AsNoTracking()
+            .Where(p => productIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.Name, p.PictureUrl })
+            .ToListAsync();
+
+        var map = products.ToDictionary(x => x.Id, x => x);
+
+        return res
+            .Select(x => map.TryGetValue(x.ProductId, out var p)
+                ? new ProductCount(x.ProductId, p.Name, p.PictureUrl, x.Count)
+                : new ProductCount(x.ProductId, $"#{x.ProductId}", null, x.Count))
+            .ToList();
+    }
+
+    [HttpGet("top-rated")]
+    public async Task<ActionResult<List<ProductRating>>> GetTopRated(
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] string? categoryIds,
+        [FromQuery] int take = 30)
+    {
+        var (start, end) = NormalizeRange(from, to);
+        var catIds = ParseIds(categoryIds);
+        var filteredProductIds = await FilterProductIdsByCategories(catIds);
+
+        var q = context.ProductReviews
+            .AsNoTracking()
+            .Where(r => r.CreatedAt >= start && r.CreatedAt <= end);
+
+        if (filteredProductIds != null)
+            q = q.Where(r => filteredProductIds.Contains(r.ProductId));
+
+        var res = await q
+            .GroupBy(r => r.ProductId)
+            .Select(g => new { ProductId = g.Key, AverageRating = g.Average(x => (double)x.Rating), RatingsCount = g.LongCount() })
+            .OrderByDescending(x => x.AverageRating)
+            .ThenByDescending(x => x.RatingsCount)
+            .Take(Math.Clamp(take, 1, 200))
+            .ToListAsync();
+
+        var productIds = res.Select(x => x.ProductId).ToList();
+        var products = await context.Products
+            .AsNoTracking()
+            .Where(p => productIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.Name, p.PictureUrl })
+            .ToListAsync();
+
+        var map = products.ToDictionary(x => x.Id, x => x);
+
+        return res
+            .Select(x => map.TryGetValue(x.ProductId, out var p)
+                ? new ProductRating(x.ProductId, p.Name, p.PictureUrl, x.AverageRating, x.RatingsCount)
+                : new ProductRating(x.ProductId, $"#{x.ProductId}", null, x.AverageRating, x.RatingsCount))
+            .ToList();
     }
 
     private static (DateTime start, DateTime end) NormalizeRange(DateTime? from, DateTime? to)

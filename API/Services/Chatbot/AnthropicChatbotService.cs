@@ -26,7 +26,7 @@ public class AnthropicChatbotService(
         }
 
         // TEMPORARY: Hardcode key for testing
-        // var apiKey = "YOUR_API_KEY_HERE";
+        
         /*
         var apiKey =
             Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")

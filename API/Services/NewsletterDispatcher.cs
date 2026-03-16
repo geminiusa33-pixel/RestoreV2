@@ -28,21 +28,33 @@ public class NewsletterDispatcher : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Small delay to avoid racing app startup/DB init
-        await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
-
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            try
-            {
-                await ProcessDueNewsletters(stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[Newsletter] Dispatcher loop error");
-            }
+            // Small delay to avoid racing app startup/DB init
+            await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
 
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await ProcessDueNewsletters(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    // expected on shutdown
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Newsletter] Dispatcher loop error");
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // expected on shutdown
         }
     }
 

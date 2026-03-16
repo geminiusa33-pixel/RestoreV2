@@ -19,7 +19,7 @@ using System.IO;
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Identity;
 using System.Net;
-using API.Services;
+using API.Services.Invoicing;
 
 namespace API.Controllers;
 
@@ -32,6 +32,7 @@ public class OrdersController(
     IEmailService emailService,
     IOptions<EmailSettings> emailOptions,
     IInvoicePdfService invoicePdfService,
+    ITaxInvoiceService taxInvoiceService,
     IWebHostEnvironment env,
     UserManager<User> userManager,
     INotificationService notificationService,
@@ -264,6 +265,25 @@ public class OrdersController(
             var frontendUrl = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontendUrl) ? string.Empty : $"{frontendUrl}/orders/{order.Id}";
 
+            var fullOrder = await context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == order.Id);
+
+            var descMap = new Dictionary<int, string?>();
+            if (fullOrder?.OrderItems?.Count > 0)
+            {
+                var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                var meta = await context.Products
+                    .AsNoTracking()
+                    .Where(p => productIds.Contains(p.Id))
+                    .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                    .ToListAsync();
+                descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            }
+
+            var orderSummary = fullOrder == null ? string.Empty : EmailTemplate.RenderOrderSummary(fullOrder, frontendUrl, descMap);
+
             var subject = $"Pedido de devolução em avaliação (Encomenda #{order.Id})";
 
             var contactEmail = string.IsNullOrWhiteSpace(emailOptions.Value.AdminEmail)
@@ -291,6 +311,7 @@ public class OrdersController(
     </ol>
     {contactLine}
     {orderLinkLine}
+    {orderSummary}
 </div>
 """;
 
@@ -309,6 +330,25 @@ public class OrdersController(
             var frontendUrl = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontendUrl) ? string.Empty : $"{frontendUrl}/orders/{order.Id}";
 
+            var fullOrder = await context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == order.Id);
+
+            var descMap = new Dictionary<int, string?>();
+            if (fullOrder?.OrderItems?.Count > 0)
+            {
+                var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                var meta = await context.Products
+                    .AsNoTracking()
+                    .Where(p => productIds.Contains(p.Id))
+                    .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                    .ToListAsync();
+                descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            }
+
+            var orderSummary = fullOrder == null ? string.Empty : EmailTemplate.RenderOrderSummary(fullOrder, frontendUrl, descMap);
+
             var subject = $"Pedido de devolução recusado (Encomenda #{order.Id})";
             var note = string.IsNullOrWhiteSpace(order.RefundReviewNote) ? "" : $"<p style=\"margin:0 0 12px\"><strong>Comentário da Loja:</strong> {WebUtility.HtmlEncode(order.RefundReviewNote)}</p>";
 
@@ -322,6 +362,7 @@ public class OrdersController(
     <p style="margin:0 0 12px">O pedido de devolução da encomenda <strong>#{order.Id}</strong> foi recusado.</p>
     {note}
     {orderLinkLine}
+    {orderSummary}
 </div>
 """;
 
@@ -494,6 +535,25 @@ public class OrdersController(
         return File(pdfBytes, "application/pdf", $"recibo-{order.Id}.pdf");
     }
 
+    [HttpGet("{id:int}/tax-invoice")]
+    public async Task<IActionResult> DownloadTaxInvoice(int id, CancellationToken ct)
+    {
+        var order = await context.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id && o.BuyerEmail == User.GetEmail(), ct);
+
+        if (order == null) return NotFound();
+
+        if (order.OrderStatus == OrderStatus.Pending || order.OrderStatus == OrderStatus.PaymentFailed)
+            return BadRequest("Fatura indisponível para esta encomenda");
+
+        var pdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(order, ct);
+        if (pdf == null) return BadRequest("Fatura oficial indisponível (serviço de faturação não configurado ou falhou)");
+
+        return File(pdf.Content, pdf.ContentType, pdf.FileName);
+    }
+
     [Authorize(Roles = "Admin")]
     [HttpGet("all")]
     public async Task<ActionResult<List<OrderDto>>> GetAllSales([FromQuery] OrderAdminParams queryParams)
@@ -586,6 +646,26 @@ public class OrdersController(
 
         var pdfBytes = await invoicePdfService.GenerateReceiptPdfAsync(order, ct);
         return File(pdfBytes, "application/pdf", $"recibo-{order.Id}.pdf");
+    }
+
+    [Authorize(Roles = "Admin")]
+    [HttpGet("all/{id:int}/tax-invoice")]
+    public async Task<IActionResult> DownloadAnyTaxInvoice(int id, CancellationToken ct)
+    {
+        var order = await context.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+        if (order == null) return NotFound();
+
+        if (order.OrderStatus == OrderStatus.Pending || order.OrderStatus == OrderStatus.PaymentFailed)
+            return BadRequest("Fatura indisponível para esta encomenda");
+
+        var pdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(order, ct);
+        if (pdf == null) return BadRequest("Fatura oficial indisponível (serviço de faturação não configurado ou falhou)");
+
+        return File(pdf.Content, pdf.ContentType, pdf.FileName);
     }
 
     [Authorize(Roles = "Admin")]
@@ -711,6 +791,16 @@ public class OrdersController(
             var frontend = emailOptions.Value.FrontendUrl?.TrimEnd('/') ?? string.Empty;
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{fullOrder.Id}?feedback=1";
 
+            var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+            var meta = await context.Products
+                .AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                .ToListAsync(ct);
+            var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+
+            var orderSummary = EmailTemplate.RenderOrderSummary(fullOrder, frontend, descMap, includeTotals: false);
+
             var productLinks = fullOrder.OrderItems
                 .Select(oi => new { oi.ItemOrdered.ProductId, oi.ItemOrdered.Name })
                 .GroupBy(x => x.ProductId)
@@ -728,6 +818,11 @@ public class OrdersController(
                 ? ""
                 : "<ul>" + string.Join("", productLinks.Select(p => $"<li><a href=\"{p.Url}\">{System.Net.WebUtility.HtmlEncode(p.Name)}</a></li>")) + "</ul>";
 
+            var serviceBtn = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Deixar feedback do serviço");
+            var productButtons = productLinks.Count == 0
+                ? string.Empty
+                : "<div style=\"margin-top:10px\">" + string.Join(" ", productLinks.Select(p => EmailTemplate.PrimaryButton(p.Url, $"Avaliar: {p.Name}"))) + "</div>";
+
             var subject = $"Encomenda #{fullOrder.Id}: Avalie o serviço e os produtos";
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
@@ -736,11 +831,13 @@ public class OrdersController(
 
                   <h3>Feedback do serviço (encomenda)</h3>
                   <p>Este comentário é sobre a experiência/serviço da encomenda (não é a avaliação do produto).</p>
-                  {(string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Deixar feedback aqui: <a href=\"{orderUrl}\">{orderUrl}</a></p>")}
+                                    {(string.IsNullOrWhiteSpace(serviceBtn) ? string.Empty : $"<p style=\"margin:0 0 12px\">{serviceBtn}</p>")}
 
                   <h3>Avaliação dos produtos</h3>
-                  <p>Para avaliar um produto, use a secção <strong>Avaliações</strong> na página do produto:</p>
-                  {productsHtml}
+                                    <p>Para avaliar um produto, use a secção <strong>Avaliações</strong> na página do produto:</p>
+                                    {orderSummary}
+                                    {productButtons}
+                                    {(string.IsNullOrWhiteSpace(productButtons) ? productsHtml : string.Empty)}
                 </div>
                 """;
 
@@ -772,13 +869,35 @@ public class OrdersController(
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
             var subject = $"Tracking CTT - Encomenda #{order.Id}";
+
+            var fullOrder = await context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == order.Id, ct);
+
+            var descMap = new Dictionary<int, string?>();
+            if (fullOrder?.OrderItems?.Count > 0)
+            {
+                var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                var meta = await context.Products
+                    .AsNoTracking()
+                    .Where(p => productIds.Contains(p.Id))
+                    .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                    .ToListAsync(ct);
+                descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            }
+
+            var orderSummary = fullOrder == null ? string.Empty : EmailTemplate.RenderOrderSummary(fullOrder, frontend, descMap, includeTotals: false);
+            var btnTrack = EmailTemplate.PrimaryButton(cttUrl, "Acompanhar CTT");
+            var btnOrder = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
+
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>A sua encomenda <strong>#{order.Id}</strong> foi enviada.</p>
                   <p><strong>Tracking CTT:</strong> {WebUtility.HtmlEncode(tracking)}</p>
-                  <p>Acompanhar: <a href=\"{cttUrl}\">{cttUrl}</a></p>
-                  {(string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>")}
+                  <p style='margin:0 0 12px'>{btnTrack} {(string.IsNullOrWhiteSpace(btnOrder) ? string.Empty : btnOrder)}</p>
+                  {orderSummary}
                 </div>
                 """;
 
@@ -863,26 +982,59 @@ public class OrdersController(
 
             if (fullOrder == null) return;
 
-            var pdfBytes = await invoicePdfService.GenerateReceiptPdfAsync(fullOrder, ct);
+            var receiptBytes = await invoicePdfService.GenerateReceiptPdfAsync(fullOrder, ct);
+            var taxPdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(fullOrder, ct);
 
-            var subject = $"Recibo da encomenda #{order.Id}";
-            var html = $"""
-                <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                  <h2>Restore</h2>
-                  <p>Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.</p>
-                </div>
-                """;
+            var subject = taxPdf != null
+                ? $"Fatura e recibo da encomenda #{order.Id}"
+                : $"Recibo da encomenda #{order.Id}";
 
-            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html,
-                new[]
+                        var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
+                        var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
+                        var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                        var meta = await context.Products
+                                .AsNoTracking()
+                                .Where(p => productIds.Contains(p.Id))
+                                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                                .ToListAsync(ct);
+                        var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+                        var orderSummary = EmailTemplate.RenderOrderSummary(fullOrder, frontend, descMap);
+
+                        var btnOrder = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
+
+                        var heading = taxPdf != null ? "Fatura e recibo" : "Recibo";
+                        var body = taxPdf != null
+                            ? $"Segue em anexo a fatura (oficial) e o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>."
+                            : $"Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.";
+
+                        var html = $"""
+                                <div style='font-family: Arial, sans-serif; line-height: 1.5'>
+                                    <h2>{heading}</h2>
+                                    <p>{body}</p>
+                                    {(string.IsNullOrWhiteSpace(btnOrder) ? string.Empty : $"<p style='margin:0 0 12px'>{btnOrder}</p>")}
+                                    {orderSummary}
+                                </div>
+                                """;
+
+            var attachments = new List<EmailAttachment>();
+            if (taxPdf != null)
+            {
+                attachments.Add(new EmailAttachment
                 {
-                    new EmailAttachment
-                    {
-                        FileName = $"recibo-{order.Id}.pdf",
-                        ContentType = "application/pdf",
-                        Content = pdfBytes
-                    }
+                    FileName = taxPdf.FileName,
+                    ContentType = taxPdf.ContentType,
+                    Content = taxPdf.Content
                 });
+            }
+
+            attachments.Add(new EmailAttachment
+            {
+                FileName = $"recibo-{order.Id}.pdf",
+                ContentType = "application/pdf",
+                Content = receiptBytes
+            });
+
+            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html, attachments);
 
             if (!sent) return;
 
@@ -890,6 +1042,7 @@ public class OrdersController(
             if (toUpdate == null) return;
 
             toUpdate.ReceiptEmailedAt = DateTime.UtcNow;
+            if (taxPdf != null) toUpdate.TaxInvoiceEmailedAt = DateTime.UtcNow;
             await context.SaveChangesAsync(ct);
         }
         catch (Exception ex)
@@ -1542,6 +1695,25 @@ public class OrdersController(
             var frontend = emailOptions.Value.FrontendUrl?.TrimEnd('/') ?? string.Empty;
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
 
+            var fullOrder = await context.Orders
+                .AsNoTracking()
+                .Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == order.Id);
+
+            var descMap = new Dictionary<int, string?>();
+            if (fullOrder?.OrderItems?.Count > 0)
+            {
+                var productIds = fullOrder.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                var meta = await context.Products
+                    .AsNoTracking()
+                    .Where(p => productIds.Contains(p.Id))
+                    .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                    .ToListAsync();
+                descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            }
+
+            var orderSummary = fullOrder == null ? string.Empty : EmailTemplate.RenderOrderSummary(fullOrder, frontend, descMap, includeTotals: newStatus != OrderStatus.ReviewRequested);
+
             if (newStatus == OrderStatus.Cancelled)
             {
                 var pdfBytes = await invoicePdfService.GenerateCancellationPdfAsync(order, CancellationToken.None);
@@ -1558,6 +1730,7 @@ public class OrdersController(
                       <p>{refundText}</p>
                       {(string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>")}
                       <p>Segue em anexo o PDF de confirmação de anulação.</p>
+                                            {orderSummary}
                     </div>
                     """;
 
@@ -1605,12 +1778,17 @@ public class OrdersController(
                 ? $"<p>Deixe o seu comentário aqui: <a href=\"{orderUrl}\">{orderUrl}</a></p>"
                 : (!string.IsNullOrWhiteSpace(orderUrl) ? $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>" : string.Empty);
 
+            var btnOrder = string.IsNullOrWhiteSpace(orderUrl)
+                ? string.Empty
+                : EmailTemplate.PrimaryButton(orderUrl, newStatus == OrderStatus.ReviewRequested ? "Deixar feedback" : "Ver encomenda");
+
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>{headline}</p>
                   <p><strong>Encomenda:</strong> #{order.Id}</p>
-                  {extra}
+                                    {(string.IsNullOrWhiteSpace(btnOrder) ? extra : $"<p style='margin:0 0 12px'>{btnOrder}</p>")}
+                                    {orderSummary}
                 </div>
                 """;
 
@@ -1697,6 +1875,14 @@ public class OrdersController(
                     OrderItems = items,
                     BuyerEmail = User.GetEmail(),
                     ShippingAddress = orderDto.ShippingAddress,
+                    BillingName = string.IsNullOrWhiteSpace(orderDto.BillingName) ? null : orderDto.BillingName.Trim(),
+                    BillingTaxId = string.IsNullOrWhiteSpace(orderDto.BillingTaxId) ? null : orderDto.BillingTaxId.Trim(),
+                    BillingLine1 = string.IsNullOrWhiteSpace(orderDto.BillingLine1) ? null : orderDto.BillingLine1.Trim(),
+                    BillingLine2 = string.IsNullOrWhiteSpace(orderDto.BillingLine2) ? null : orderDto.BillingLine2.Trim(),
+                    BillingCity = string.IsNullOrWhiteSpace(orderDto.BillingCity) ? null : orderDto.BillingCity.Trim(),
+                    BillingState = string.IsNullOrWhiteSpace(orderDto.BillingState) ? null : orderDto.BillingState.Trim(),
+                    BillingPostalCode = string.IsNullOrWhiteSpace(orderDto.BillingPostalCode) ? null : orderDto.BillingPostalCode.Trim(),
+                    BillingCountry = string.IsNullOrWhiteSpace(orderDto.BillingCountry) ? null : orderDto.BillingCountry.Trim(),
                     DeliveryFee = deliveryFee,
                     Subtotal = subtotal,
                     ProductDiscount = productDiscount,
@@ -1711,6 +1897,29 @@ public class OrdersController(
         else 
         {
             order.OrderItems = items;
+
+            // Keep billing details in sync if the client provided them.
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingName)) order.BillingName = orderDto.BillingName.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingTaxId)) order.BillingTaxId = orderDto.BillingTaxId.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingLine1)) order.BillingLine1 = orderDto.BillingLine1.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingLine2)) order.BillingLine2 = orderDto.BillingLine2.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingCity)) order.BillingCity = orderDto.BillingCity.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingState)) order.BillingState = orderDto.BillingState.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingPostalCode)) order.BillingPostalCode = orderDto.BillingPostalCode.Trim();
+            if (!string.IsNullOrWhiteSpace(orderDto.BillingCountry)) order.BillingCountry = orderDto.BillingCountry.Trim();
+        }
+
+        // If the buyer asked for a fiscal invoice (NIF) but didn't provide explicit billing address,
+        // default billing details to the shipping address. This keeps the payload minimal on the client.
+        if (!string.IsNullOrWhiteSpace(order.BillingTaxId))
+        {
+            order.BillingName ??= order.ShippingAddress.Name;
+            order.BillingLine1 ??= order.ShippingAddress.Line1;
+            order.BillingLine2 ??= order.ShippingAddress.Line2;
+            order.BillingCity ??= order.ShippingAddress.City;
+            order.BillingState ??= order.ShippingAddress.State;
+            order.BillingPostalCode ??= order.ShippingAddress.PostalCode;
+            order.BillingCountry ??= order.ShippingAddress.Country;
         }
         
         // verify payment intent status with Stripe so the order reflects payment status

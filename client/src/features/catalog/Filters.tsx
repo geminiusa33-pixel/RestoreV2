@@ -1,4 +1,4 @@
-import { Box, Button, Paper, Typography, Collapse } from "@mui/material";
+import { Box, Button, Paper, Typography, Collapse, Checkbox } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { useEffect, useState } from 'react';
 // Search moved to NavBar for global access
@@ -24,7 +24,7 @@ type Props = {
     filtersData?: {
         generos: string[];
         anos: number[];
-        categories?: { id: number; name: string }[];
+        categories?: { id: number; name: string; parentCategoryId?: number | null }[];
         campaigns?: { id: number; name: string }[];
         marcas?: string[];
         modelos?: string[];
@@ -70,7 +70,8 @@ export default function Filters({filtersData: data, onChangeComplete}: Props) {
     }
 
     const generoItems = (data?.generos ?? []).map(g => ({ value: g, label: mapGeneroLabel(g) }));
-    const categoryItems = (data?.categories ?? []).map(c => ({ value: String(c.id), label: c.name }));
+    const categories = (data?.categories ?? []);
+    const categoryItems = categories.map(c => ({ value: String(c.id), label: c.name }));
     const campaignItems = (data?.campaigns ?? []).map(c => ({ value: String(c.id), label: c.name }));
     const marcaItems = (data?.marcas ?? []).map(m => ({ value: m, label: m }));
     const modeloItems = (data?.modelos ?? []).map(m => ({ value: m, label: m }));
@@ -104,6 +105,111 @@ export default function Filters({filtersData: data, onChangeComplete}: Props) {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showGenero]);
+
+    // --- Category tree (expandable) ---
+    const categoryById = new Map<number, { id: number; name: string; parentCategoryId?: number | null }>();
+    for (const c of categories) categoryById.set(c.id, c);
+
+    const childrenByParent = new Map<number | null, Array<{ id: number; name: string; parentCategoryId?: number | null }>>();
+    for (const c of categories) {
+        const pid = (c.parentCategoryId ?? null);
+        const arr = childrenByParent.get(pid) ?? [];
+        arr.push(c);
+        childrenByParent.set(pid, arr);
+    }
+    // stable order
+    for (const [, arr] of childrenByParent) {
+        arr.sort((a, b) => (a.name ?? '').localeCompare((b.name ?? ''), 'pt', { sensitivity: 'base' }));
+    }
+
+    const [expandedCategories, setExpandedCategories] = useState<Record<number, boolean>>({});
+
+    // auto-expand ancestors of selected categories so the user can see what is selected
+    useEffect(() => {
+        const next: Record<number, boolean> = { ...expandedCategories };
+        for (const selectedId of (categoryIds ?? [])) {
+            let current = categoryById.get(selectedId);
+            for (let i = 0; i < 10 && current; i++) {
+                const pid = current.parentCategoryId ?? null;
+                if (!pid) break;
+                next[pid] = true;
+                current = categoryById.get(pid);
+            }
+        }
+        setExpandedCategories(next);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [categories.length, (categoryIds ?? []).join(',')]);
+
+    const toggleExpanded = (id: number) => setExpandedCategories(prev => ({ ...prev, [id]: !prev[id] }));
+
+    const toggleCategoryChecked = (id: number) => {
+        const set = new Set<number>(categoryIds ?? []);
+        if (set.has(id)) set.delete(id); else set.add(id);
+        dispatch(setCategories(Array.from(set)));
+        onChangeComplete?.();
+    };
+
+    const renderCategoryNode = (node: { id: number; name: string }, level: number) => {
+        const kids = childrenByParent.get(node.id) ?? [];
+        const hasKids = kids.length > 0;
+        const expanded = !!expandedCategories[node.id];
+        const checked = (categoryIds ?? []).includes(node.id);
+
+        return (
+            <Box key={node.id}>
+                <Box
+                    sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        pl: Math.min(level, 6) * 2,
+                        py: 0.25,
+                        borderRadius: 1,
+                        cursor: hasKids ? 'pointer' : 'default'
+                    }}
+                    onClick={() => { if (hasKids) toggleExpanded(node.id); }}
+                >
+                    {hasKids ? (
+                        <Box component='span' sx={{ width: 16, transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 160ms', userSelect: 'none' }}>›</Box>
+                    ) : (
+                        <Box component='span' sx={{ width: 16 }} />
+                    )}
+
+                    <Checkbox
+                        size="small"
+                        checked={checked}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleCategoryChecked(node.id)}
+                    />
+
+                    <Typography
+                        sx={{
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                        }}
+                        onClick={(e) => {
+                            // If no kids, clicking label toggles the checkbox
+                            if (!hasKids) {
+                                e.stopPropagation();
+                                toggleCategoryChecked(node.id);
+                            }
+                        }}
+                    >
+                        {node.name}
+                    </Typography>
+                </Box>
+
+                {hasKids && (
+                    <Collapse in={expanded} timeout={160}>
+                        <Box>
+                            {kids.map(k => renderCategoryNode(k, level + 1))}
+                        </Box>
+                    </Collapse>
+                )}
+            </Box>
+        );
+    };
 
     return (
         <Box sx={{ width: '100%' }}>
@@ -151,7 +257,15 @@ export default function Filters({filtersData: data, onChangeComplete}: Props) {
                         </Box>
                         <Collapse in={openCategories} timeout={160}>
                             <Box sx={{ p: 2 }}>
-                                <CheckboxButtons items={categoryItems} checked={(categoryIds ?? []).map(String)} onChange={(items: string[]) => { dispatch(setCategories(items.map(Number))); onChangeComplete?.(); }} />
+                                {categories.length === 0 ? (
+                                    <Typography color='text.secondary'>Sem categorias.</Typography>
+                                ) : (
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                                        {(childrenByParent.get(null) ?? [])
+                                            .filter(c => !c.parentCategoryId || !categoryById.has(c.parentCategoryId))
+                                            .map(c => renderCategoryNode(c, 0))}
+                                    </Box>
+                                )}
                             </Box>
                         </Collapse>
 

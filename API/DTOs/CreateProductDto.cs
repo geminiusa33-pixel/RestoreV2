@@ -126,4 +126,8 @@ public class CreateProductDto
     public string? VariantsJson { get; set; }
     public List<IFormFile>? VariantFiles { get; set; }
     public List<string>? VariantFileKeys { get; set; }
+
+    // Custom properties (free-form key/value pairs) submitted as JSON in the same multipart request.
+    // Expected shape: [{ categoryId?: number|null, name: string, value: string }]
+    public string? PropertiesJson { get; set; }
 }

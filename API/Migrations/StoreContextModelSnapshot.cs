@@ -170,10 +170,17 @@ namespace API.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int?>("ParentCategoryId")
+                        .HasColumnType("int");
+
                     b.Property<string>("Slug")
-                        .HasColumnType("nvarchar(max)");
+                        .HasColumnType("nvarchar(450)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ParentCategoryId");
+
+                    b.HasIndex("Slug");
 
                     b.ToTable("Categories");
                 });
@@ -439,6 +446,30 @@ namespace API.Migrations
                     b.Property<string>("AdminCommentReply")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("BillingCity")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingCountry")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingLine1")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingLine2")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingPostalCode")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingState")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BillingTaxId")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("BuyerEmail")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -509,6 +540,27 @@ namespace API.Migrations
 
                     b.Property<long>("Subtotal")
                         .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("TaxInvoiceEmailedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("TaxInvoiceIssuedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("TaxInvoiceLastAttemptAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("TaxInvoiceLastError")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TaxInvoiceNumber")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TaxInvoiceProvider")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TaxInvoiceProviderId")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<DateTime?>("TrackingAddedAt")
                         .HasColumnType("datetime2");
@@ -664,6 +716,12 @@ namespace API.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<DateTime?>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CustomPropertiesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Description")
@@ -1379,6 +1437,16 @@ namespace API.Migrations
                     b.Navigation("ProductVariant");
                 });
 
+            modelBuilder.Entity("API.Entities.Category", b =>
+                {
+                    b.HasOne("API.Entities.Category", "ParentCategory")
+                        .WithMany("Children")
+                        .HasForeignKey("ParentCategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("ParentCategory");
+                });
+
             modelBuilder.Entity("API.Entities.Favorite", b =>
                 {
                     b.HasOne("API.Entities.Product", "Product")
@@ -1714,6 +1782,11 @@ namespace API.Migrations
             modelBuilder.Entity("API.Entities.Basket", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("API.Entities.Category", b =>
+                {
+                    b.Navigation("Children");
                 });
 
             modelBuilder.Entity("API.Entities.HeroBlock", b =>

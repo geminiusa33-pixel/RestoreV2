@@ -4,4 +4,5 @@ export type Category = {
     slug?: string | null;
     isActive?: boolean;
     description?: string | null;
+    parentCategoryId?: number | null;
 }

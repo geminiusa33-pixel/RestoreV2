@@ -4,6 +4,7 @@ import { baseQueryWithErrorHandling } from '../../app/api/baseApi';
 export type TimeSeriesPoint = { date: string; value: number };
 export type ProductCount = { productId: number; name: string; pictureUrl?: string | null; count: number };
 export type ProductCorrelationPoint = { productId: number; name: string; pictureUrl?: string | null; clicks: number; sales: number };
+export type ProductRating = { productId: number; name: string; pictureUrl?: string | null; averageRating: number; ratingsCount: number };
 
 export type AnalyticsQuery = {
   from?: string;
@@ -45,6 +46,15 @@ export const analyticsApi = createApi({
     correlation: builder.query<ProductCorrelationPoint[], AnalyticsQuery>({
       query: (q) => ({ url: 'analytics/correlation', params: buildParams(q) }),
     }),
+    topComments: builder.query<ProductCount[], AnalyticsQuery>({
+      query: (q) => ({ url: 'analytics/top-comments', params: buildParams(q) }),
+    }),
+    topRated: builder.query<ProductRating[], AnalyticsQuery>({
+      query: (q) => ({ url: 'analytics/top-rated', params: buildParams(q) }),
+    }),
+    allSales: builder.query<ProductCount[], AnalyticsQuery>({
+      query: (q) => ({ url: 'analytics/all-sales', params: buildParams(q) }),
+    }),
   }),
 });
 
@@ -55,4 +65,7 @@ export const {
   useTopClicksQuery,
   useClicksTimeSeriesQuery,
   useCorrelationQuery,
+  useTopCommentsQuery,
+  useTopRatedQuery,
+  useAllSalesQuery,
 } = analyticsApi;

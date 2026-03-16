@@ -1,9 +1,8 @@
 import { FieldValues, useForm } from "react-hook-form";
 import { createProductSchema, CreateProductSchema } from "../../lib/schemas/createProductSchema";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Box, Button, Grid, Paper, Typography, Autocomplete, TextField, Chip } from "@mui/material";
+import { Box, Button, Grid, Paper, Typography, Autocomplete, TextField, Chip, IconButton } from "@mui/material";
 import AppTextInput from "../../app/shared/components/AppTextInput";
-import AppSelectInput from "../../app/shared/components/AppSelectInput";
 import AppDropzone from "../../app/shared/components/AppDropzone";
 import PageTitle from "../../app/shared/components/PageTitle";
 import { Product } from "../../app/models/product";
@@ -13,8 +12,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LoadingButton } from "@mui/lab";
 import { computeFinalPrice, currencyFormat } from '../../lib/util';
 import { handleApiError } from "../../lib/util";
-import { useCreateProductMutation, useUpdateProductMutation, useGetCampaignsQuery, useGetCategoriesQuery, useCreateCategoryMutation } from "./adminApi";
-import genres from "../../lib/genres";
+import { useCreateProductMutation, useUpdateProductMutation, useGetCampaignsQuery, useGetAllCategoriesQuery, useCreateCategoryMutation } from "./adminApi";
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
 
 // --- Tipagem segura para ficheiros com preview ---
 type PreviewFile = File & { preview: string };
@@ -30,6 +30,13 @@ type VariantDraft = {
     file?: File | null;
     preview?: string | null;
     existingPictureUrl?: string | null;
+};
+
+type PropertyDraft = {
+    key: string;
+    categoryId: number | null;
+    name: string;
+    value: string;
 };
 
 type Props = {
@@ -53,6 +60,8 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
     const [variantsError, setVariantsError] = useState<string | null>(null);
     const variantPrevRef = useRef<string[]>([]);
 
+    const [propertiesDraft, setPropertiesDraft] = useState<PropertyDraft[]>([]);
+
     const watchFile = watch("file");
     const watchSecondaryFiles = watch('secondaryFiles') as unknown as SecondaryPreviewFile[] | undefined;
     const secondaryPrevRef = useRef<SecondaryPreviewFile[]>([]);
@@ -60,11 +69,33 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
     const [updateProduct] = useUpdateProductMutation();
     const [createCategory] = useCreateCategoryMutation();
     const { data: campaigns } = useGetCampaignsQuery();
-    const { data: categories } = useGetCategoriesQuery();
+    const { data: categories } = useGetAllCategoriesQuery();
 
-    const [selectedCategories, setSelectedCategories] = useState<Array<Category | string>>(product?.categories ?? []);
-    const [categoryInput, setCategoryInput] = useState<string>('');
+    const [selectedCategoryPath, setSelectedCategoryPath] = useState<Category[]>(() => (product?.categories ?? []) as Category[]);
+    const [categoryInputs, setCategoryInputs] = useState<string[]>(['', '', '', '']);
     const [selectedCampaigns, setSelectedCampaigns] = useState<{ id: number; name: string }[]>(product?.campaigns ?? []);
+
+    const selectedCategoryPathRef = useRef<Category[]>(selectedCategoryPath);
+    const categoryInputsRef = useRef<string[]>(categoryInputs);
+    const creatingCategoryLevelsRef = useRef<Set<number>>(new Set());
+
+    useEffect(() => {
+        selectedCategoryPathRef.current = selectedCategoryPath;
+    }, [selectedCategoryPath]);
+
+    useEffect(() => {
+        categoryInputsRef.current = categoryInputs;
+    }, [categoryInputs]);
+
+    const categoriesById = useMemo(() => {
+        const map = new Map<number, Category>();
+        for (const c of (categories ?? [])) map.set(c.id, c);
+        return map;
+    }, [categories]);
+
+    const activeCategories = useMemo(() => {
+        return (categories ?? []).filter(c => c.isActive !== false);
+    }, [categories]);
 
     const newVariantKey = () => {
         const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
@@ -85,77 +116,12 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
         };
     }, []);
     
-    const isBook = (cats: Array<Category | string> | null | undefined) => {
-        return (cats ?? []).some(c => {
-            const n = (typeof c === 'string' ? c : c.name ?? '').toLowerCase();
-            return n.includes('livro') || n.includes('livros');
-        });
-    }
-
-    const isClothingOrToy = (cats: Array<Category | string> | null | undefined) => {
-        return (cats ?? []).some(c => {
-            const n = (typeof c === 'string' ? c : c.name ?? '').toLowerCase();
-            return ['vestuario', 'vestuário', 'roupa', 'roupas', 'brinquedo', 'brinquedos'].some(k => n.includes(k));
-        });
-    }
-
-    const isTechnology = (cats: Array<Category | string> | null | undefined) => {
-        return (cats ?? []).some(c => {
-            const n = (typeof c === 'string' ? c : c.name ?? '').toLowerCase();
-            return ['tecnologia', 'tecnológico', 'tecnologicos', 'tech', 'eletronica', 'eletrónica', 'eletronics', 'eletrónicos', 'electronica', 'eletrónicos'].some(k => n.includes(k));
-        });
-    }
-
-    const isToy = (cats: Array<Category | string> | null | undefined) => {
-        return (cats ?? []).some(c => {
-            const n = (typeof c === 'string' ? c : c.name ?? '').toLowerCase();
-            return ['brinquedo', 'brinquedos', 'toy', 'toys'].some(k => n.includes(k));
-        });
-    }
-
-    // When categories change, clear fields that are no longer applicable.
-    // Without this, hidden inputs can keep their previous values and get submitted.
-    useEffect(() => {
-        const book = isBook(selectedCategories);
-        const clothingOrToy = isClothingOrToy(selectedCategories);
-        const tech = isTechnology(selectedCategories);
-        const toy = isToy(selectedCategories);
-
-        if (!book) {
-            setValue('genero', undefined);
-            setValue('author', undefined);
-            setValue('secondaryAuthors', undefined);
-            setValue('anoPublicacao', undefined);
-            setValue('isbn', undefined);
-            setValue('publisher', undefined);
-            setValue('edition', undefined);
-            setValue('synopsis', undefined);
-            setValue('index', undefined);
-            setValue('pageCount', undefined);
-            setValue('language', undefined);
-            setValue('format', undefined);
-            setValue('dimensoes', undefined);
-            setValue('weight', undefined);
-        }
-
-        if (!clothingOrToy) {
-            setValue('cor', undefined);
-            setValue('material', undefined);
-            setValue('tamanho', undefined);
-            setValue('marca', undefined);
-        }
-
-        if (!tech) {
-            setValue('tipo', undefined);
-            setValue('modelo', undefined);
-            setValue('capacidade', undefined);
-        }
-
-        if (!toy) {
-            setValue('idadeMinima', undefined);
-            setValue('idadeMaxima', undefined);
-        }
-    }, [selectedCategories, setValue]);
+    const newPropertyKey = () => {
+        const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `p-${id}`;
+    };
 
     // 1) Atualizar valores quando "product" muda (evitar reset do file)
     useEffect(() => {
@@ -198,8 +164,29 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
             setRemovedSecondaryImages([]);
             // initialise selected categories/campaigns in form
             if (product.categories && product.categories.length) {
-                setSelectedCategories(product.categories as { id: number; name: string }[]);
-                setValue('categoryIds', product.categories.map(c => c.id));
+                // Try to reconstruct a single best path from the product's assigned categories.
+                const assigned = (product.categories as Category[]).filter(Boolean);
+                const assignedIds = new Set(assigned.map(c => c.id));
+                const parentIdsInSet = new Set<number>();
+                for (const c of assigned) {
+                    const pid = (c.parentCategoryId ?? categoriesById.get(c.id)?.parentCategoryId) ?? null;
+                    if (pid && assignedIds.has(pid)) parentIdsInSet.add(pid);
+                }
+                const leaves = assigned.filter(c => !parentIdsInSet.has(c.id));
+                const leaf = leaves[0] ?? assigned[0];
+
+                const path: Category[] = [];
+                let current: Category | undefined = categoriesById.get(leaf.id) ?? leaf;
+                for (let i = 0; i < 10 && current; i++) {
+                    path.unshift(current);
+                    if (!current.parentCategoryId) break;
+                    current = categoriesById.get(current.parentCategoryId);
+                }
+                const finalPath = path.slice(0, 4);
+                setSelectedCategoryPath(finalPath);
+                selectedCategoryPathRef.current = finalPath;
+                setValue('categoryIds', finalPath.map(c => c.id));
+                setCategoryInputs(['', '', '', '']);
             }
             if (product.campaigns && product.campaigns.length) {
                 setSelectedCampaigns(product.campaigns as { id: number; name: string }[]);
@@ -219,12 +206,113 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
             }));
             setVariantsDraft(drafts);
             setVariantsError(null);
+
+            // Custom properties
+            try {
+                const raw = product.customPropertiesJson;
+                const parsed = raw ? JSON.parse(raw) : [];
+                const next: PropertyDraft[] = Array.isArray(parsed) ? parsed.map((p: any) => ({
+                    key: newPropertyKey(),
+                    categoryId: (typeof p?.categoryId === 'number' ? p.categoryId : null),
+                    name: String(p?.name ?? '').trim(),
+                    value: String(p?.value ?? '').trim(),
+                })) : [];
+                setPropertiesDraft(next);
+            } catch {
+                setPropertiesDraft([]);
+            }
         }
         else {
             setVariantsDraft([]);
             setVariantsError(null);
+            setPropertiesDraft([]);
         }
-    }, [product, reset, setValue]);
+    }, [product, reset, setValue, categoriesById]);
+
+    const setPathAtLevel = (level: number, value: Category | null) => {
+        setSelectedCategoryPath(prev => {
+            const next = prev.slice(0, level);
+            if (value) next[level] = value;
+            const final = next.slice(0, 4);
+            selectedCategoryPathRef.current = final;
+            setValue('categoryIds', final.map(c => c.id));
+            return final;
+        });
+
+        // Clear deeper level inputs when changing the path
+        setCategoryInputs(prev => {
+            const next = prev.map((v, i) => (i > level ? '' : v));
+            categoryInputsRef.current = next;
+            return next;
+        });
+    };
+
+    const optionsForParent = (parentId: number | null) => {
+        const pid = parentId ?? null;
+        return activeCategories.filter(c => (c.parentCategoryId ?? null) === pid);
+    };
+
+    const breadcrumbForLevel = (level: number) => {
+        if (level <= 0) return '';
+        const parts = selectedCategoryPathRef.current.slice(0, level).map(c => (c.name ?? '').trim()).filter(Boolean);
+        return parts.join(' → ');
+    };
+
+    const breadcrumbForCategoryId = (categoryId: number | null) => {
+        if (!categoryId) return '';
+        const idsInPath = new Set(selectedCategoryPathRef.current.map(c => c.id));
+        if (!idsInPath.has(categoryId)) return '';
+        const parts: string[] = [];
+        for (const c of selectedCategoryPathRef.current) {
+            parts.push((c.name ?? '').trim());
+            if (c.id === categoryId) break;
+        }
+        return parts.filter(Boolean).join(' → ');
+    };
+
+    const ensureCategoryAtLevel = async (level: number, raw: string) => {
+        const name = (raw ?? '').trim();
+        if (!name) return;
+
+        const parentId = level === 0 ? null : (selectedCategoryPathRef.current[level - 1]?.id ?? null);
+        if (level > 0 && !parentId) return;
+
+        const options = optionsForParent(parentId);
+        const existing = options.find(o => (o.name ?? '').trim().toLowerCase() === name.toLowerCase());
+        if (existing) {
+            setPathAtLevel(level, existing);
+            setCategoryInputs(prev => {
+                const next = prev.map((v, i) => (i === level ? '' : v));
+                categoryInputsRef.current = next;
+                return next;
+            });
+            return;
+        }
+
+        const created = await createCategory({ name, parentCategoryId: parentId }).unwrap();
+        setPathAtLevel(level, created);
+        setCategoryInputs(prev => {
+            const next = prev.map((v, i) => (i === level ? '' : v));
+            categoryInputsRef.current = next;
+            return next;
+        });
+    };
+
+    const commitTypedCategoryAtLevel = async (level: number) => {
+        const typed = (categoryInputsRef.current[level] ?? '').trim();
+        if (!typed) return;
+
+        if (selectedCategoryPathRef.current[level]) return;
+
+        if (creatingCategoryLevelsRef.current.has(level)) return;
+        creatingCategoryLevelsRef.current.add(level);
+
+        try {
+            await ensureCategoryAtLevel(level, typed);
+        } finally {
+            creatingCategoryLevelsRef.current.delete(level);
+        }
+    };
 
     // 2) Revogar preview anterior quando watchFile muda
     useEffect(() => {
@@ -300,31 +388,9 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
         try {
             setVariantsError(null);
 
-            // Ensure any pending (typed) categories are created on the server before submitting
-            const pendingCategories = selectedCategories.filter(c => typeof c === 'string').map(s => s as string);
-            // include any typed-but-not-confirmed category from the input box
-            const typed = categoryInput?.trim();
-            if (typed && !pendingCategories.includes(typed) && !selectedCategories.some(c => typeof c !== 'string' && (c as Category).name === typed)) {
-                pendingCategories.push(typed);
-            }
-            const existingCategoryIds = selectedCategories.filter(c => typeof c !== 'string').map(c => (c as Category).id);
-            const finalCategoryIds: number[] = [...existingCategoryIds];
-            if (pendingCategories && pendingCategories.length) {
-                for (const name of pendingCategories) {
-                    try {
-                        const created = await createCategory({ name }).unwrap();
-                        finalCategoryIds.push(created.id);
-                        // replace the pending string in selectedCategories with the created object
-                        setSelectedCategories(prev => prev.map(p => p === name ? created : p));
-                        // clear typed input if matched
-                        if (categoryInput && categoryInput === name) setCategoryInput('');
-                    } catch (err) {
-                        console.error('Failed to create category', err);
-                        setError('categoryIds', { type: 'manual', message: 'Failed to create category. Check permissions.' });
-                        return; // abort submit
-                    }
-                }
-            }
+            // For the cascading selector, we submit the whole selected path (ancestors + leaf)
+            // so existing filtering by parent category continues to work.
+            const finalCategoryIds: number[] = (selectedCategoryPathRef.current ?? []).map(c => c.id);
 
             // ensure campaignIds are included (selectedCampaigns holds campaign objects)
             const existingCampaignIds = (selectedCampaigns ?? []).map(c => (c as { id: number }).id);
@@ -376,6 +442,17 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
                 campaignIds: finalCampaignIds,
                 // quantityInStock stays independent even if variants exist
             } as unknown as FieldValues;
+
+            // custom properties JSON
+            const cleanProps = (propertiesDraft ?? [])
+                .map(p => ({
+                    categoryId: p.categoryId ?? null,
+                    name: (p.name ?? '').trim(),
+                    value: (p.value ?? '').trim(),
+                }))
+                .filter(p => p.name.length > 0);
+            // Always include (even empty) so updates can clear.
+            submissionData.propertiesJson = JSON.stringify(cleanProps);
             const formData = createFormData(submissionData);
 
             // ensure explicit sentinel keys are present when user cleared selections so the server
@@ -453,58 +530,197 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
                         <AppTextInput control={control} name="name" label="Nome do Produto" />
                     </Grid>
 
-                    <Grid item xs={12} md={6}>
-                        {/* show genero only when at least one selected category is 'Livro(s)' */}
-                        {isBook(selectedCategories) && (
-                            <AppSelectInput
-                                items={genres}
-                                control={control}
-                                name="genero"
-                                label="Género"
-                                searchable
-                            />
-                        )}
+                    {/* Categories (up to 4 levels) */}
+                    <Grid item xs={12}>
+                        <Box display='flex' flexDirection='column' gap={2}>
+                            {[0, 1, 2, 3].map((level) => {
+                                const parentId = level === 0 ? null : (selectedCategoryPathRef.current[level - 1]?.id ?? null);
+                                const visible = level === 0 || !!selectedCategoryPathRef.current[level - 1];
+                                if (!visible) return null;
+
+                                const opts = optionsForParent(parentId);
+                                const value = selectedCategoryPath[level] ?? null;
+                                const label = level === 0
+                                    ? 'Categoria'
+                                    : level === 1
+                                        ? 'Subcategoria'
+                                        : `Subcategoria (nível ${level + 1})`;
+
+                                const breadcrumb = breadcrumbForLevel(level);
+
+                                return (
+                                    <Box key={level}>
+                                        {breadcrumb && (
+                                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                                {breadcrumb}
+                                            </Typography>
+                                        )}
+
+                                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                                            <Box sx={{ flex: 1 }}>
+                                                <Autocomplete<Category, false, false, true>
+                                                    freeSolo
+                                                    options={opts}
+                                                    value={value}
+                                                    inputValue={categoryInputs[level]}
+                                                    getOptionLabel={(o) => typeof o === 'string' ? o : (o.name ?? '')}
+                                                    onInputChange={(_e, v) => {
+                                                        setCategoryInputs(prev => {
+                                                            const next = prev.map((p, i) => (i === level ? v : p));
+                                                            categoryInputsRef.current = next;
+                                                            return next;
+                                                        });
+                                                    }}
+                                                    onChange={async (_event, v) => {
+                                                        try {
+                                                            if (typeof v === 'string') {
+                                                                await commitTypedCategoryAtLevel(level);
+                                                                return;
+                                                            }
+
+                                                            if (!v) {
+                                                                setPathAtLevel(level, null);
+                                                                return;
+                                                            }
+
+                                                            setPathAtLevel(level, v);
+                                                            setCategoryInputs(prev => {
+                                                                const next = prev.map((p, i) => (i === level ? '' : p));
+                                                                categoryInputsRef.current = next;
+                                                                return next;
+                                                            });
+                                                        } catch (err) {
+                                                            console.error('Failed to set category', err);
+                                                            setError('categoryIds', { type: 'manual', message: 'Falha ao criar/definir categoria. Verifica permissões.' });
+                                                        }
+                                                    }}
+                                                    renderInput={(params) => (
+                                                        <TextField
+                                                            {...params}
+                                                            label={label}
+                                                            placeholder='Seleciona ou escreve e carrega Enter'
+                                                            onBlur={async () => {
+                                                                try {
+                                                                    await commitTypedCategoryAtLevel(level);
+                                                                } catch (err) {
+                                                                    console.error('Failed to create category', err);
+                                                                    setError('categoryIds', { type: 'manual', message: 'Falha ao criar categoria. Verifica permissões.' });
+                                                                }
+                                                            }}
+                                                            onKeyDown={async (e) => {
+                                                                if (e.key !== 'Enter') return;
+                                                                e.preventDefault();
+                                                                try {
+                                                                    await commitTypedCategoryAtLevel(level);
+                                                                } catch (err) {
+                                                                    console.error('Failed to create category', err);
+                                                                    setError('categoryIds', { type: 'manual', message: 'Falha ao criar categoria. Verifica permissões.' });
+                                                                }
+                                                            }}
+                                                        />
+                                                    )}
+                                                />
+                                            </Box>
+
+                                            <IconButton
+                                                aria-label="add-property"
+                                                sx={{ mt: 0.5 }}
+                                                size="small"
+                                                disabled={!selectedCategoryPath[level]}
+                                                onClick={() => {
+                                                    const cat = selectedCategoryPath[level];
+                                                    if (!cat) return;
+                                                    setPropertiesDraft(prev => ([
+                                                        ...prev,
+                                                        { key: newPropertyKey(), categoryId: cat.id, name: '', value: '' }
+                                                    ]));
+                                                }}
+                                            >
+                                                <AddIcon fontSize="small" />
+                                            </IconButton>
+                                        </Box>
+                                    </Box>
+                                );
+                            })}
+                        </Box>
                     </Grid>
 
-                    {/* Categories multi-select */}
+                    {/* Custom properties */}
                     <Grid item xs={12}>
-                        <Autocomplete
-                            inputValue={categoryInput}
-                            onInputChange={(_e, v) => setCategoryInput(v)}
-                            multiple
-                            freeSolo
-                            options={(categories ?? []) as Category[]}
-                            getOptionLabel={(option: Category | string) => typeof option === 'string' ? option : option.name}
-                            value={selectedCategories}
-                            onChange={(_event, value) => {
-                                // value can contain Category objects or strings (freeSolo)
-                                const vals = value ?? [];
-                                const resolved: Array<Category | string> = [];
-                                for (const v of vals) {
-                                    if (typeof v === 'string') {
-                                        // keep as pending (no id yet) — will create on submit
-                                        resolved.push(v);
-                                    } else {
-                                        resolved.push(v as Category);
-                                    }
-                                }
-                                setSelectedCategories(resolved);
-                                // clear the input field when selection changes
-                                setCategoryInput('');
-                                // update form categoryIds only with existing numeric ids
-                                setValue('categoryIds', resolved.filter(r => typeof r !== 'string').map(r => (r as Category).id));
-                            }}
-                            renderTags={(value: (Category | string)[], getTagProps) =>
-                                value.map((option, index) => {
-                                    const label = typeof option === 'string' ? option : option.name;
-                                    const key = typeof option === 'string' ? label + index : option.id;
-                                    return <Chip label={label} {...getTagProps({ index })} key={key} />
-                                })
-                            }
-                            renderInput={(params) => (
-                                <TextField {...params} label="Categorias" placeholder="Select or type to create" />
+                        <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 2 }}>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+                                <Typography variant="subtitle1" fontWeight={700}>
+                                    Propriedades (opcional)
+                                </Typography>
+                                <Button
+                                    variant="outlined"
+                                    size="small"
+                                    onClick={() => {
+                                        const leaf = selectedCategoryPathRef.current[selectedCategoryPathRef.current.length - 1];
+                                        setPropertiesDraft(prev => ([
+                                            ...prev,
+                                            { key: newPropertyKey(), categoryId: leaf?.id ?? null, name: '', value: '' }
+                                        ]));
+                                    }}
+                                >
+                                    Adicionar
+                                </Button>
+                            </Box>
+
+                            {(propertiesDraft ?? []).length === 0 ? (
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                    Usa o botão "+" nas categorias ou "Adicionar" para incluir propriedades como Sabor, Tamanho, Compatibilidade, etc.
+                                </Typography>
+                            ) : (
+                                <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                    {propertiesDraft.map((p) => {
+                                        const crumb = breadcrumbForCategoryId(p.categoryId);
+                                        return (
+                                            <Box key={p.key} sx={{ borderTop: 1, borderColor: 'divider', pt: 2 }}>
+                                                {crumb && (
+                                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                                                        {crumb}
+                                                    </Typography>
+                                                )}
+                                                <Grid container spacing={2} alignItems="center">
+                                                    <Grid item xs={12} md={4}>
+                                                        <TextField
+                                                            fullWidth
+                                                            label="Propriedade"
+                                                            value={p.name}
+                                                            onChange={(e) => {
+                                                                const value = e.target.value;
+                                                                setPropertiesDraft(prev => prev.map(x => x.key === p.key ? { ...x, name: value } : x));
+                                                            }}
+                                                        />
+                                                    </Grid>
+                                                    <Grid item xs={12} md={7}>
+                                                        <TextField
+                                                            fullWidth
+                                                            label="Valor"
+                                                            value={p.value}
+                                                            onChange={(e) => {
+                                                                const value = e.target.value;
+                                                                setPropertiesDraft(prev => prev.map(x => x.key === p.key ? { ...x, value } : x));
+                                                            }}
+                                                        />
+                                                    </Grid>
+                                                    <Grid item xs={12} md={1} sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                                        <IconButton
+                                                            aria-label="remove-property"
+                                                            color="error"
+                                                            onClick={() => setPropertiesDraft(prev => prev.filter(x => x.key !== p.key))}
+                                                        >
+                                                            <DeleteIcon />
+                                                        </IconButton>
+                                                    </Grid>
+                                                </Grid>
+                                            </Box>
+                                        );
+                                    })}
+                                </Box>
                             )}
-                        />
+                        </Box>
                     </Grid>
 
                     {/* Campaigns multi-select */}
@@ -530,134 +746,6 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
                         />
                     </Grid>
 
-                    {/* Book-specific fields */}
-                    {isBook(selectedCategories) && (
-                        <>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="author" label="Autor" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="secondaryAuthors" label="Autores secundários" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput
-                                    type="number"
-                                    control={control}
-                                    name="anoPublicacao"
-                                    label="Ano de Publicação"
-                                />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="isbn" label="ISBN" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="publisher" label="Editora" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="edition" label="Edição" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="precoPromocional" label="Preço Promocional" type="number" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="synopsis" label="Sinopse" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="index" label="Índice" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="pageCount" label="Número de páginas" type="number" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="language" label="Idioma" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="format" label="Formato" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="dimensoes" label="Dimensões" />
-                            </Grid>
-
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="weight" label="Weight" type="number" />
-                            </Grid>
-                        </>
-                    )}
-
-                    {/* Clothing / Toy fields: show when category looks like clothing or toy */}
-                    {isClothingOrToy(selectedCategories) && (variantsDraft?.length ?? 0) === 0 && (
-                        <>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="cor" label="Cor / Color" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="material" label="Material" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="tamanho" label="Tamanho / Size" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="marca" label="Marca / Brand" />
-                            </Grid>
-                        </>
-                    )}
-
-                    {/* Tecnologia fields */}
-                    {isTechnology(selectedCategories) && (variantsDraft?.length ?? 0) === 0 && (
-                        <>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="tipo" label="Tipo (ex.: Telemóvel, Portátil, Consola)" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="marca" label="Marca / Brand" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="modelo" label="Modelo" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="cor" label="Cor / Color" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="capacidade" label="Capacidade (ex.: 128GB, 1TB)" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="material" label="Material (opcional)" />
-                            </Grid>
-                        </>
-                    )}
-
-                    {/* Brinquedos fields */}
-                    {isToy(selectedCategories) && (variantsDraft?.length ?? 0) === 0 && (
-                        <>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="marca" label="Marca / Brand" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="cor" label="Cor / Color" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="material" label="Material" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="idadeMinima" label="Idade mínima" type="number" />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                                <AppTextInput control={control} name="idadeMaxima" label="Idade máxima" type="number" />
-                            </Grid>
-                        </>
-                    )}
 
                     <Grid item xs={12} md={6}>
                         <AppTextInput
@@ -698,6 +786,146 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
                             helperText={(variantsDraft?.length ?? 0) > 0 ? 'Independente do stock por cor' : undefined}
                         />
                     </Grid>
+
+                    <Grid item xs={12}>
+                        <AppTextInput
+                            control={control}
+                            multiline
+                            rows={4}
+                            name="description"
+                            label="Descrição"
+                        />
+                    </Grid>                           
+
+                    <Grid item xs={12} sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
+                        <Box sx={{ flex: 1, width: '100%' }}>
+                            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                                Imagem principal
+                            </Typography>
+                            <AppDropzone name="file" control={control} />
+                            <Box sx={{ mt: 2 }}>
+                                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                                    Imagens secundárias (opcional)
+                                </Typography>
+                                <Button component="label" variant="outlined" size="small">
+                                    Selecionar imagens
+                                    <input
+                                        type="file"
+                                        hidden
+                                        multiple
+                                        accept="image/*"
+                                        onChange={(e) => {
+                                            const files = e.target.files;
+                                            if (files && files.length) {
+                                                const existing = (watchSecondaryFiles ?? []) as SecondaryPreviewFile[];
+                                                const existingByKey = new Map(existing.map(f => [secondaryFileKey(f), f] as const));
+                                                const incoming = Array.from(files).map((f) => {
+                                                    const key = secondaryFileKey(f);
+                                                    if (existingByKey.has(key)) return existingByKey.get(key)!;
+                                                    return Object.assign(f, { preview: URL.createObjectURL(f) }) as SecondaryPreviewFile;
+                                                });
+                                                const merged = [...existing, ...incoming].reduce<SecondaryPreviewFile[]>((acc, f) => {
+                                                    const key = secondaryFileKey(f);
+                                                    if (!acc.some(x => secondaryFileKey(x) === key)) acc.push(f);
+                                                    return acc;
+                                                }, []);
+
+                                                setValue('secondaryFiles', merged as unknown as CreateProductSchema['secondaryFiles'], {
+                                                    shouldDirty: true,
+                                                    shouldTouch: true,
+                                                });
+                                                // allow selecting the same file again later
+                                                (e.target as HTMLInputElement).value = '';
+                                            }
+                                        }}
+                                    />
+                                </Button>
+
+                                {secondaryCounts.total > 0 && (
+                                    <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary' }}>
+                                        Selecionadas: {secondaryCounts.total} (ativas: {secondaryCounts.active})
+                                    </Typography>
+                                )}
+
+                                {watchSecondaryFiles && watchSecondaryFiles.length > 0 && (
+                                    <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                                        {watchSecondaryFiles.map((f) => {
+                                            const key = secondaryFileKey(f);
+                                            const removed = removedSecondaryUploads.includes(key);
+                                            return (
+                                                <Box key={key} sx={{ position: 'relative' }}>
+                                                    <img
+                                                        src={f.preview}
+                                                        alt={f.name}
+                                                        style={{
+                                                            width: 120,
+                                                            height: 80,
+                                                            objectFit: 'cover',
+                                                            borderRadius: 4,
+                                                            opacity: removed ? 0.4 : 1,
+                                                        }}
+                                                    />
+                                                    <Button
+                                                        size="small"
+                                                        color={removed ? 'inherit' : 'error'}
+                                                        onClick={() => {
+                                                            setRemovedSecondaryUploads((prev) => {
+                                                                if (prev.includes(key)) return prev.filter((x) => x !== key);
+                                                                return [...prev, key];
+                                                            });
+                                                        }}
+                                                        sx={{ position: 'absolute', top: 4, right: 4, minWidth: 0, px: 1 }}
+                                                    >
+                                                        {removed ? 'Undo' : 'Remove'}
+                                                    </Button>
+                                                </Box>
+                                            );
+                                        })}
+                                    </Box>
+                                )}
+                            </Box>
+                        </Box>
+
+                        <Box sx={{ mt: { xs: 1, sm: 0 } }}>
+                            {watchFile && (watchFile as PreviewFile).preview ? (
+                                <img
+                                    src={(watchFile as PreviewFile).preview}
+                                    alt="preview"
+                                    style={{ maxHeight: 200, maxWidth: '100%', width: 'auto', display: 'block' }}
+                                />
+                            ) : product?.pictureUrl ? (
+                                <img
+                                    src={product.pictureUrl}
+                                    alt="product"
+                                    style={{ maxHeight: 200, maxWidth: '100%', width: 'auto', display: 'block' }}
+                                />
+                            ) : null}
+                        </Box>
+                    </Grid>
+
+                    {/* Secondary images thumbnails and removal UI */}
+                    {product?.secondaryImages && product.secondaryImages.length > 0 && (
+                        <Grid item xs={12}>
+                            <Typography variant="subtitle1" sx={{ mb: 1 }}>Existing secondary images</Typography>
+                            <Box display='flex' gap={1} flexWrap='wrap'>
+                                {product.secondaryImages.map((url, idx) => {
+                                    const identifier = product.secondaryImagePublicIds?.[idx] ?? url;
+                                    const removed = removedSecondaryImages.includes(identifier);
+                                    return (
+                                        <Box key={identifier} sx={{ position: 'relative' }}>
+                                            <img src={url} alt="sec" style={{ width: 120, height: 80, objectFit: 'cover', borderRadius: 4, opacity: removed ? 0.4 : 1 }} />
+                                            <Button size="small" color={removed ? 'inherit' : 'error'} onClick={() => {
+                                                if (removed) setRemovedSecondaryImages(prev => prev.filter(x => x !== identifier));
+                                                else setRemovedSecondaryImages(prev => [...prev, identifier]);
+                                            }} sx={{ position: 'absolute', top: 4, right: 4 }}>
+                                                {removed ? 'Undo' : 'Remove'}
+                                            </Button>
+                                        </Box>
+                                    )
+                                })}
+                            </Box>
+                        </Grid>
+                    )}
 
                     <Grid item xs={12}>
                         <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 2 }}>
@@ -871,146 +1099,6 @@ export default function ProductForm({ setEditMode, product, refetch, setSelected
                             )}
                         </Box>
                     </Grid>
-
-                    <Grid item xs={12}>
-                        <AppTextInput
-                            control={control}
-                            multiline
-                            rows={4}
-                            name="description"
-                            label="Descrição"
-                        />
-                    </Grid>                           
-
-                    <Grid item xs={12} sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
-                        <Box sx={{ flex: 1, width: '100%' }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                                Imagem principal
-                            </Typography>
-                            <AppDropzone name="file" control={control} />
-                            <Box sx={{ mt: 2 }}>
-                                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                                    Imagens secundárias (opcional)
-                                </Typography>
-                                <Button component="label" variant="outlined" size="small">
-                                    Selecionar imagens
-                                    <input
-                                        type="file"
-                                        hidden
-                                        multiple
-                                        accept="image/*"
-                                        onChange={(e) => {
-                                            const files = e.target.files;
-                                            if (files && files.length) {
-                                                const existing = (watchSecondaryFiles ?? []) as SecondaryPreviewFile[];
-                                                const existingByKey = new Map(existing.map(f => [secondaryFileKey(f), f] as const));
-                                                const incoming = Array.from(files).map((f) => {
-                                                    const key = secondaryFileKey(f);
-                                                    if (existingByKey.has(key)) return existingByKey.get(key)!;
-                                                    return Object.assign(f, { preview: URL.createObjectURL(f) }) as SecondaryPreviewFile;
-                                                });
-                                                const merged = [...existing, ...incoming].reduce<SecondaryPreviewFile[]>((acc, f) => {
-                                                    const key = secondaryFileKey(f);
-                                                    if (!acc.some(x => secondaryFileKey(x) === key)) acc.push(f);
-                                                    return acc;
-                                                }, []);
-
-                                                setValue('secondaryFiles', merged as unknown as CreateProductSchema['secondaryFiles'], {
-                                                    shouldDirty: true,
-                                                    shouldTouch: true,
-                                                });
-                                                // allow selecting the same file again later
-                                                (e.target as HTMLInputElement).value = '';
-                                            }
-                                        }}
-                                    />
-                                </Button>
-
-                                {secondaryCounts.total > 0 && (
-                                    <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary' }}>
-                                        Selecionadas: {secondaryCounts.total} (ativas: {secondaryCounts.active})
-                                    </Typography>
-                                )}
-
-                                {watchSecondaryFiles && watchSecondaryFiles.length > 0 && (
-                                    <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                                        {watchSecondaryFiles.map((f) => {
-                                            const key = secondaryFileKey(f);
-                                            const removed = removedSecondaryUploads.includes(key);
-                                            return (
-                                                <Box key={key} sx={{ position: 'relative' }}>
-                                                    <img
-                                                        src={f.preview}
-                                                        alt={f.name}
-                                                        style={{
-                                                            width: 120,
-                                                            height: 80,
-                                                            objectFit: 'cover',
-                                                            borderRadius: 4,
-                                                            opacity: removed ? 0.4 : 1,
-                                                        }}
-                                                    />
-                                                    <Button
-                                                        size="small"
-                                                        color={removed ? 'inherit' : 'error'}
-                                                        onClick={() => {
-                                                            setRemovedSecondaryUploads((prev) => {
-                                                                if (prev.includes(key)) return prev.filter((x) => x !== key);
-                                                                return [...prev, key];
-                                                            });
-                                                        }}
-                                                        sx={{ position: 'absolute', top: 4, right: 4, minWidth: 0, px: 1 }}
-                                                    >
-                                                        {removed ? 'Undo' : 'Remove'}
-                                                    </Button>
-                                                </Box>
-                                            );
-                                        })}
-                                    </Box>
-                                )}
-                            </Box>
-                        </Box>
-
-                        <Box sx={{ mt: { xs: 1, sm: 0 } }}>
-                            {watchFile && (watchFile as PreviewFile).preview ? (
-                                <img
-                                    src={(watchFile as PreviewFile).preview}
-                                    alt="preview"
-                                    style={{ maxHeight: 200, maxWidth: '100%', width: 'auto', display: 'block' }}
-                                />
-                            ) : product?.pictureUrl ? (
-                                <img
-                                    src={product.pictureUrl}
-                                    alt="product"
-                                    style={{ maxHeight: 200, maxWidth: '100%', width: 'auto', display: 'block' }}
-                                />
-                            ) : null}
-                        </Box>
-                    </Grid>
-
-                    {/* Secondary images thumbnails and removal UI */}
-                    {product?.secondaryImages && product.secondaryImages.length > 0 && (
-                        <Grid item xs={12}>
-                            <Typography variant="subtitle1" sx={{ mb: 1 }}>Existing secondary images</Typography>
-                            <Box display='flex' gap={1} flexWrap='wrap'>
-                                {product.secondaryImages.map((url, idx) => {
-                                    const identifier = product.secondaryImagePublicIds?.[idx] ?? url;
-                                    const removed = removedSecondaryImages.includes(identifier);
-                                    return (
-                                        <Box key={identifier} sx={{ position: 'relative' }}>
-                                            <img src={url} alt="sec" style={{ width: 120, height: 80, objectFit: 'cover', borderRadius: 4, opacity: removed ? 0.4 : 1 }} />
-                                            <Button size="small" color={removed ? 'inherit' : 'error'} onClick={() => {
-                                                if (removed) setRemovedSecondaryImages(prev => prev.filter(x => x !== identifier));
-                                                else setRemovedSecondaryImages(prev => [...prev, identifier]);
-                                            }} sx={{ position: 'absolute', top: 4, right: 4 }}>
-                                                {removed ? 'Undo' : 'Remove'}
-                                            </Button>
-                                        </Box>
-                                    )
-                                })}
-                            </Box>
-                        </Grid>
-                    )}
                 </Grid>
 
                 <Box sx={{ mt: 3, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', gap: 2 }}>

@@ -7,6 +7,16 @@ public class Order
     public int Id { get; set; }
     public required string BuyerEmail { get; set; }
     public required ShippingAddress ShippingAddress { get; set; }
+
+    // Optional billing details (for official invoicing). Keep separate from ShippingAddress.
+    public string? BillingName { get; set; }
+    public string? BillingTaxId { get; set; } // NIF
+    public string? BillingLine1 { get; set; }
+    public string? BillingLine2 { get; set; }
+    public string? BillingCity { get; set; }
+    public string? BillingState { get; set; }
+    public string? BillingPostalCode { get; set; }
+    public string? BillingCountry { get; set; }
     public DateTime OrderDate { get; set; } = DateTime.UtcNow;
     public List<OrderItem> OrderItems { get; set; } = [];
     public long Subtotal { get; set; }
@@ -26,6 +36,15 @@ public class Order
     public OrderIncident? Incident { get; set; }
 
     public DateTime? ReceiptEmailedAt { get; set; }
+
+    // Official (AT-certified provider) invoice metadata
+    public string? TaxInvoiceProvider { get; set; }
+    public string? TaxInvoiceProviderId { get; set; }
+    public string? TaxInvoiceNumber { get; set; }
+    public DateTime? TaxInvoiceIssuedAt { get; set; }
+    public DateTime? TaxInvoiceLastAttemptAt { get; set; }
+    public string? TaxInvoiceLastError { get; set; }
+    public DateTime? TaxInvoiceEmailedAt { get; set; }
 
     public string? TrackingNumber { get; set; }
     public DateTime? TrackingAddedAt { get; set; }

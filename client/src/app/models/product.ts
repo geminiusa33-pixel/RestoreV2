@@ -54,6 +54,9 @@ export type Product = {
     isPublished?: boolean | null
     // color variants (each can override stock/photo/description/price)
     variants?: ProductVariant[] | null
+
+    // admin-defined free-form key/value properties (JSON string)
+    customPropertiesJson?: string | null
 }
 
 export type ProductVariant = {

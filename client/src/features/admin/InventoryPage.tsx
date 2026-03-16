@@ -1,4 +1,4 @@
-import { Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Grid } from "@mui/material";
+import { Box, Button, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Grid, Collapse, Paper, Autocomplete, TextField, Switch } from "@mui/material";
 import { Link } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "../../app/store/store"
 import { useFetchProductsQuery, useFetchFiltersQuery, useFetchProductDetailsQuery } from "../catalog/catalogApi";
@@ -11,7 +11,7 @@ import { setPageNumber } from "../catalog/catalogSlice";
 import { useState } from "react";
 import ProductForm from "./ProductForm";
 import { Product } from "../../app/models/product";
-import { useDeleteProductMutation, usePublishProductMutation } from "./adminApi";
+import { useBulkDeleteProductsMutation, useCleanupUnusedCategoriesMutation, useDeleteProductMutation, useGetDeletedProductsQuery, usePublishProductMutation, useRestoreProductMutation, useUnpublishProductMutation } from "./adminApi";
 import { skipToken } from "@reduxjs/toolkit/query";
 import PageTitle from "../../app/shared/components/PageTitle";
 
@@ -24,6 +24,14 @@ export default function InventoryPage() {
     const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
     const [deleteProduct] = useDeleteProductMutation();
     const [publishProduct] = usePublishProductMutation();
+    const [unpublishProduct] = useUnpublishProductMutation();
+    const [bulkDelete] = useBulkDeleteProductsMutation();
+    const [cleanupUnusedCategories, { isLoading: isCleaningCategories }] = useCleanupUnusedCategoriesMutation();
+    const [restoreProduct] = useRestoreProductMutation();
+    const { data: deletedProducts = [], refetch: refetchDeleted } = useGetDeletedProductsQuery();
+
+    const [openRecycle, setOpenRecycle] = useState(false);
+    const [bulkCategory, setBulkCategory] = useState<{ id: number; name: string } | null>(null);
 
     const { data: selectedProductDetails, isLoading: isLoadingSelectedProduct } = useFetchProductDetailsQuery(
         selectedProductId ?? skipToken
@@ -52,6 +60,54 @@ export default function InventoryPage() {
         }
     }
 
+    const handleUnpublishProduct = async (id: number) => {
+        try {
+            await unpublishProduct(id).unwrap();
+            refetch();
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
+    const handleBulkDeleteAll = async () => {
+        try {
+            await bulkDelete({ deleteAll: true }).unwrap();
+            refetch();
+            refetchDeleted();
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
+    const handleBulkDeleteCategory = async () => {
+        if (!bulkCategory?.id) return;
+        try {
+            await bulkDelete({ categoryId: bulkCategory.id }).unwrap();
+            refetch();
+            refetchDeleted();
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
+    const handleCleanupCategories = async () => {
+        try {
+            await cleanupUnusedCategories().unwrap();
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
+    const handleRestore = async (id: number) => {
+        try {
+            await restoreProduct(id).unwrap();
+            refetch();
+            refetchDeleted();
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
     if (editMode && selectedProductId && (isLoadingSelectedProduct || !selectedProductDetails)) return <div>Loading...</div>
 
     if (editMode) return <ProductForm 
@@ -65,8 +121,23 @@ export default function InventoryPage() {
     const items = data?.items ?? [];
 
     const getCategoryLabel = (product: Product) => {
-        const first = product.categories?.[0]?.name?.trim();
-        return first && first.length > 0 ? first : '—';
+        const cats = (product.categories ?? []).filter(Boolean) as Array<{ id: number; name?: string; parentCategoryId?: number | null }>;
+        if (!cats.length) return '—';
+
+        const ids = new Set(cats.map(c => c.id));
+        const root = cats.find(c => !c.parentCategoryId || !ids.has(c.parentCategoryId)) ?? cats[0];
+
+        const parts: string[] = [];
+        let current = root;
+        for (let i = 0; i < 10 && current; i++) {
+            parts.push((current.name ?? '').trim());
+            const child = cats.find(c => (c.parentCategoryId ?? null) === current.id);
+            if (!child) break;
+            current = child;
+        }
+
+        const label = parts.filter(Boolean).join(' → ');
+        return label || '—';
     }
 
     return (
@@ -76,11 +147,77 @@ export default function InventoryPage() {
                     title="Inventário"
                     variant="h4"
                     actions={(
-                        <Button onClick={() => setEditMode(true)} size='large' variant='contained'>
-                            Criar Produto
-                        </Button>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            <Button onClick={() => setOpenRecycle(s => !s)} size='large' variant='outlined'>
+                                Reciclagem
+                            </Button>
+                            <Button onClick={() => setEditMode(true)} size='large' variant='contained'>
+                                Criar Produto
+                            </Button>
+                        </Box>
                     )}
                 />
+            </Box>
+
+            {/* Bulk actions + recycle bin */}
+            <Box sx={{ px: 2, pb: 2 }}>
+                <Paper sx={{ p: 2, borderRadius: 2 }}>
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <Button variant="outlined" color="error" onClick={handleBulkDeleteAll}>
+                            Apagar todos os produtos
+                        </Button>
+
+                        <Button variant="outlined" onClick={handleCleanupCategories} disabled={isCleaningCategories}>
+                            Limpar categorias sem produtos à venda
+                        </Button>
+
+                        <Autocomplete
+                            sx={{ minWidth: 280 }}
+                            options={(filtersData?.categories ?? []).map(c => ({ id: c.id, name: c.name }))}
+                            getOptionLabel={(o) => o.name}
+                            value={bulkCategory}
+                            onChange={(_e, v) => setBulkCategory(v)}
+                            renderInput={(params) => <TextField {...params} label="Apagar por categoria" size="small" />}
+                        />
+                        <Button variant="outlined" color="error" disabled={!bulkCategory?.id} onClick={handleBulkDeleteCategory}>
+                            Apagar categoria
+                        </Button>
+                    </Box>
+
+                    <Collapse in={openRecycle} timeout={160}>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="h6" sx={{ mb: 1 }}>Reciclagem (restauro até 2 meses)</Typography>
+                            {deletedProducts.length === 0 ? (
+                                <Typography color="text.secondary">Sem produtos apagados recentemente.</Typography>
+                            ) : (
+                                <TableContainer component={Box}>
+                                    <Table size="small">
+                                        <TableHead>
+                                            <TableRow>
+                                                <TableCell>Produto</TableCell>
+                                                <TableCell>Apagado em</TableCell>
+                                                <TableCell align="right"></TableCell>
+                                            </TableRow>
+                                        </TableHead>
+                                        <TableBody>
+                                            {deletedProducts.map(p => (
+                                                <TableRow key={p.id}>
+                                                    <TableCell>{p.name}</TableCell>
+                                                    <TableCell>{new Date(p.deletedAt).toLocaleString()}</TableCell>
+                                                    <TableCell align="right">
+                                                        <Button variant="outlined" onClick={() => handleRestore(p.id)}>
+                                                            Restaurar
+                                                        </Button>
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </TableContainer>
+                            )}
+                        </Box>
+                    </Collapse>
+                </Paper>
             </Box>
 
             <Grid container spacing={4}>
@@ -104,6 +241,7 @@ export default function InventoryPage() {
                             <TableCell align="right">Preço</TableCell>
                             <TableCell align="center">Desconto</TableCell>
                             <TableCell align="center">Stock</TableCell>
+                            <TableCell align="center">Visível</TableCell>
                             <TableCell align="right"></TableCell>
                         </TableRow>
                     </TableHead>
@@ -166,6 +304,16 @@ export default function InventoryPage() {
                                         <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 2, p: 1, display: 'inline-block', whiteSpace: 'normal' }}>
                                             {hasDiscount ? `-${product.discountPercentage}%` : '—'}
                                         </Box>
+                                    </TableCell>
+
+                                    <TableCell align="center">
+                                        <Switch
+                                            checked={product.isPublished === true}
+                                            onChange={(_e, checked) => {
+                                                if (checked) handlePublishProduct(product.id);
+                                                else handleUnpublishProduct(product.id);
+                                            }}
+                                        />
                                     </TableCell>
 
                                     <TableCell align="center">

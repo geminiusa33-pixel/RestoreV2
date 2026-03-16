@@ -15,7 +15,6 @@ using Microsoft.AspNetCore.Hosting;
 using Google.Apis.Auth;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.Extensions.Logging;
-using API.Services;
 
 namespace API.Controllers;
 

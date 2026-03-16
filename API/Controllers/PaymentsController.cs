@@ -13,6 +13,8 @@ using Stripe;
 using Microsoft.AspNetCore.Identity;
 using API.Entities;
 using System.Linq;
+using System.Collections.Generic;
+using API.Services.Invoicing;
 
 namespace API.Controllers;
 
@@ -23,6 +25,7 @@ public class PaymentsController(
     ILogger<PaymentsController> logger,
     IEmailService emailService,
     IInvoicePdfService invoicePdfService,
+    ITaxInvoiceService taxInvoiceService,
     IOptions<EmailSettings> emailOptions,
     INotificationService notificationService,
     UserManager<User> userManager)
@@ -186,12 +189,25 @@ public class PaymentsController(
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var url = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/admin/sales/{order.Id}";
             var subject = $"[Venda] Pagamento recebido (Encomenda #{order.Id})";
+
+                        var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+                        var meta = await context.Products
+                                .AsNoTracking()
+                                .Where(p => productIds.Contains(p.Id))
+                                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                                .ToListAsync();
+                        var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+                        var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+                        var btn = string.IsNullOrWhiteSpace(url) ? string.Empty : EmailTemplate.PrimaryButton(url, "Abrir venda");
+
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>Pagamento confirmado para a encomenda <strong>#{order.Id}</strong>.</p>
                   <p><strong>Cliente:</strong> {System.Net.WebUtility.HtmlEncode(order.BuyerEmail)}</p>
-                  {(string.IsNullOrWhiteSpace(url) ? string.Empty : $"<p>Ver venda: <a href=\"{url}\">{url}</a></p>")}
+                                    {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                                    {orderSummary}
                 </div>
                 """;
 
@@ -215,12 +231,24 @@ public class PaymentsController(
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
 
+            var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+            var meta = await context.Products
+                .AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                .ToListAsync();
+            var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+            var btn = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
+
             var subject = $"Encomenda #{order.Id}: Em processamento";
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
                   <h2>Restore</h2>
                   <p>Pagamento confirmado. A sua encomenda <strong>#{order.Id}</strong> está a ser processada.</p>
-                  {(string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>")}
+                  {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                  {orderSummary}
                 </div>
                 """;
 
@@ -239,31 +267,59 @@ public class PaymentsController(
             if (order.ReceiptEmailedAt.HasValue) return;
             if (order.OrderStatus != OrderStatus.PaymentReceived) return;
 
-            var pdfBytes = await invoicePdfService.GenerateReceiptPdfAsync(order, CancellationToken.None);
+            var receiptBytes = await invoicePdfService.GenerateReceiptPdfAsync(order, CancellationToken.None);
+            var taxPdf = await taxInvoiceService.TryGetOrIssueInvoicePdfAsync(order, CancellationToken.None);
 
-            var subject = $"Recibo da encomenda #{order.Id}";
+            var subject = taxPdf != null
+                ? $"Fatura e recibo da encomenda #{order.Id}"
+                : $"Recibo da encomenda #{order.Id}";
             var frontend = (emailOptions.Value.FrontendUrl ?? string.Empty).TrimEnd('/');
             var orderUrl = string.IsNullOrWhiteSpace(frontend) ? string.Empty : $"{frontend}/orders/{order.Id}";
-            var extra = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : $"<p>Ver encomenda: <a href=\"{orderUrl}\">{orderUrl}</a></p>";
+
+            var productIds = order.OrderItems.Select(x => x.ItemOrdered.ProductId).Distinct().ToList();
+            var meta = await context.Products
+                .AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .Select(p => new { p.Id, Text = p.Subtitle ?? p.Description })
+                .ToListAsync();
+            var descMap = meta.ToDictionary(x => x.Id, x => x.Text);
+            var orderSummary = EmailTemplate.RenderOrderSummary(order, frontend, descMap);
+
+            var btn = string.IsNullOrWhiteSpace(orderUrl) ? string.Empty : EmailTemplate.PrimaryButton(orderUrl, "Ver encomenda");
+
+            var heading = taxPdf != null ? "Fatura e recibo" : "Recibo";
+            var body = taxPdf != null
+                ? $"Pagamento confirmado. Segue em anexo a fatura (oficial) e o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>."
+                : $"Pagamento confirmado. Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.";
 
             var html = $"""
                 <div style='font-family: Arial, sans-serif; line-height: 1.5'>
-                  <h2>Restore</h2>
-                  <p>Pagamento confirmado. Segue em anexo o recibo (PDF) da sua encomenda <strong>#{order.Id}</strong>.</p>
-                  {extra}
+                  <h2>{heading}</h2>
+                  <p>{body}</p>
+                  {(string.IsNullOrWhiteSpace(btn) ? string.Empty : $"<p style='margin:0 0 12px'>{btn}</p>")}
+                  {orderSummary}
                 </div>
                 """;
 
-            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html,
-                new[]
+            var attachments = new List<EmailAttachment>();
+            if (taxPdf != null)
+            {
+                attachments.Add(new EmailAttachment
                 {
-                    new EmailAttachment
-                    {
-                        FileName = $"recibo-{order.Id}.pdf",
-                        ContentType = "application/pdf",
-                        Content = pdfBytes
-                    }
+                    FileName = taxPdf.FileName,
+                    ContentType = taxPdf.ContentType,
+                    Content = taxPdf.Content
                 });
+            }
+
+            attachments.Add(new EmailAttachment
+            {
+                FileName = $"recibo-{order.Id}.pdf",
+                ContentType = "application/pdf",
+                Content = receiptBytes
+            });
+
+            var sent = await emailService.SendEmailWithAttachmentsAsync(order.BuyerEmail, subject, html, attachments);
 
             if (!sent) return;
 
@@ -271,6 +327,7 @@ public class PaymentsController(
             if (toUpdate == null) return;
 
             toUpdate.ReceiptEmailedAt = DateTime.UtcNow;
+            if (taxPdf != null) toUpdate.TaxInvoiceEmailedAt = DateTime.UtcNow;
             await context.SaveChangesAsync();
         }
         catch (Exception ex)

@@ -36,6 +36,8 @@ public class SendGridNewsletterSender : INewsletterSender
         if (string.IsNullOrWhiteSpace(_settings.FromEmail))
             return new NewsletterSendResult(false, "FromEmail is not configured");
 
+        htmlContent = EmailTemplate.TryWrap(_settings, htmlContent, preheader: subject);
+
         var client = new SendGridClient(_settings.SendGridApiKey);
         var from = new EmailAddress(_settings.FromEmail, _settings.FromName);
         var to = new EmailAddress(toEmail);

@@ -26,7 +26,7 @@ public class AnthropicChatbotService(
         }
 
         // TEMPORARY: Hardcode key for testing
-        var apiKey = "YOUR_API_KEY_HERE";
+        // var apiKey = "YOUR_API_KEY_HERE";
         /*
         var apiKey =
             Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
@@ -34,6 +34,8 @@ public class AnthropicChatbotService(
             ?? config["Anthropic:ApiKey"]
             ?? config["ANTHROPIC_API_KEY"];
         */
+
+        var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? settings.ApiKey;
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {

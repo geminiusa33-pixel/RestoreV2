@@ -102,12 +102,20 @@ public class Product
 
     public DateTime? UpdatedAt { get; set; }
 
+    // Soft-delete: when set, product is hidden from the storefront/admin inventory by default.
+    // Can be restored within a retention window (handled in controller).
+    public DateTime? DeletedAt { get; set; }
+
     public bool Active { get; set; } = true;
 
     // Publishing gate: products start as drafts (IsPublished=false) until admin approves.
     public bool IsPublished { get; set; } = false;
 
     public string? PublicId { get; set; }
+
+    // Arbitrary, admin-defined properties stored as JSON.
+    // Expected shape: [{ categoryId?: number|null, name: string, value: string }]
+    public string? CustomPropertiesJson { get; set; }
 
     // relations
     public List<Campaign>? Campaigns { get; set; }

@@ -113,7 +113,29 @@ export default function AdminAnalytics() {
   const { data: clicksSeries = [] } = useClicksTimeSeriesQuery(query);
   const { data: corr = [] } = useCorrelationQuery({ ...query, take: 80 });
 
-  const categoryOptions = (filters?.categories ?? []).map(c => ({ id: c.id, name: c.name }));
+  const filterCategories = (filters?.categories ?? []);
+  const byId = new Map<number, { id: number; name: string; parentCategoryId?: number | null }>();
+  for (const c of filterCategories) byId.set(c.id, c);
+
+  const categoryPathLabelNoDisambiguation = (c: { id: number; name: string; parentCategoryId?: number | null }) => {
+    const parts: string[] = [];
+    let current: typeof c | undefined = c;
+    for (let i = 0; i < 10 && current; i++) {
+      parts.unshift(current.name);
+      const pid = current.parentCategoryId ?? null;
+      if (!pid) break;
+      current = byId.get(pid);
+    }
+    return parts.join(' → ');
+  };
+
+  const categoryPathLabel = (c: { id: number; name: string; parentCategoryId?: number | null }) => {
+    const path = categoryPathLabelNoDisambiguation(c);
+    const samePathCount = filterCategories.filter(x => categoryPathLabelNoDisambiguation(x) === path).length;
+    return samePathCount > 1 ? `${path} (#${c.id})` : path;
+  };
+
+  const categoryOptions = filterCategories.map(c => ({ id: c.id, name: categoryPathLabel(c) }));
 
   const onPresetChange = (e: SelectChangeEvent) => setPreset(e.target.value as Preset);
   type Interval = 'day' | 'week' | 'month';

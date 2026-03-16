@@ -144,6 +144,23 @@ public class StoreContext(DbContextOptions options) : IdentityDbContext<User>(op
             .Property(p => p.Price)
             .HasPrecision(18, 2);
 
+        // Hide soft-deleted products by default across the app.
+        builder.Entity<Product>()
+            .HasQueryFilter(p => p.DeletedAt == null);
+
+        // Keep required relationships consistent with Product's query filter.
+        builder.Entity<BasketItem>()
+            .HasQueryFilter(x => x.Product.DeletedAt == null);
+
+        builder.Entity<ProductVariant>()
+            .HasQueryFilter(x => x.Product.DeletedAt == null);
+
+        builder.Entity<Favorite>()
+            .HasQueryFilter(x => x.Product == null || x.Product.DeletedAt == null);
+
+        builder.Entity<ProductClick>()
+            .HasQueryFilter(x => x.Product == null || x.Product.DeletedAt == null);
+
         builder.Entity<Product>()
             .Property(p => p.PromotionalPrice)
             .HasPrecision(18, 2);
@@ -161,5 +178,16 @@ public class StoreContext(DbContextOptions options) : IdentityDbContext<User>(op
                 new IdentityRole {Id = "e069461a-10cf-4abf-9930-d070b2a7e40f", Name = "Member", NormalizedName = "MEMBER"},
                 new IdentityRole {Id = "ed2e9149-fa53-484c-a93f-bd33f9e9fcf6", Name = "Admin", NormalizedName = "ADMIN"}
             );
+
+        builder.Entity<Category>(b =>
+        {
+            b.HasIndex(x => x.ParentCategoryId);
+            b.HasIndex(x => x.Slug);
+
+            b.HasOne(x => x.ParentCategory)
+                .WithMany(p => p.Children)
+                .HasForeignKey(x => x.ParentCategoryId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
     }
 }

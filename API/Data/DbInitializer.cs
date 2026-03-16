@@ -2,6 +2,8 @@ using System;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
+using System.Globalization;
+using System.Text;
 using API.Entities;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +36,13 @@ public class DbInitializer
             Console.WriteLine("[DB] Starting database migration...");
             await context.Database.MigrateAsync();
             Console.WriteLine("[DB] Migration completed successfully");
+
+            // Data hygiene: merge duplicate sibling categories (same parent + same normalized name).
+            var merged = await MergeDuplicateCategories(context);
+            if (merged > 0)
+            {
+                Console.WriteLine($"[DB] Merged {merged} duplicate categories");
+            }
         }
         catch (Exception ex)
         {
@@ -188,6 +197,103 @@ public class DbInitializer
             Console.WriteLine($"[DB ERROR] Seeding error: {ex.Message}");
             throw;
         }
+    }
+
+    private static string NormalizeKey(string? value)
+    {
+        var s = (value ?? string.Empty).Trim();
+        if (s.Length == 0) return string.Empty;
+
+        // Remove diacritics (e.g., "Vestuário" == "Vestuario") and normalize casing.
+        var normalized = s.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(normalized.Length);
+        foreach (var ch in normalized)
+        {
+            var uc = CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (uc != UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC).ToLowerInvariant();
+    }
+
+    private static async Task<int> MergeDuplicateCategories(StoreContext context)
+    {
+        // Only merge active categories.
+        // Merge rule: same ParentCategoryId and same normalized Name.
+        var categories = await context.Categories
+            .Where(c => c.IsActive)
+            .Include(c => c.Products)
+            .ToListAsync();
+
+        if (categories.Count == 0) return 0;
+
+        var byParentAndName = categories
+            .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+            .GroupBy(c => new { c.ParentCategoryId, Key = NormalizeKey(c.Name) })
+            .Where(g => g.Key.Key.Length > 0)
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        if (byParentAndName.Count == 0) return 0;
+
+        var mergedCount = 0;
+
+        // Load children relationships once (without Products to keep it lighter).
+        var childrenByParent = await context.Categories
+            .Where(c => c.IsActive)
+            .Select(c => new { c.Id, c.ParentCategoryId })
+            .ToListAsync();
+
+        foreach (var group in byParentAndName)
+        {
+            // Canonical = lowest Id to keep URLs/refs more stable.
+            var ordered = group.OrderBy(c => c.Id).ToList();
+            var canonical = ordered[0];
+
+            canonical.Products ??= [];
+
+            foreach (var dup in ordered.Skip(1))
+            {
+                // Move direct children under canonical.
+                var childIds = childrenByParent
+                    .Where(x => x.ParentCategoryId == dup.Id)
+                    .Select(x => x.Id)
+                    .ToList();
+
+                if (childIds.Count > 0)
+                {
+                    var children = await context.Categories
+                        .Where(c => childIds.Contains(c.Id))
+                        .ToListAsync();
+                    foreach (var child in children)
+                    {
+                        child.ParentCategoryId = canonical.Id;
+                    }
+                }
+
+                // Move product associations.
+                foreach (var p in (dup.Products ?? []))
+                {
+                    if (!canonical.Products.Any(x => x.Id == p.Id))
+                    {
+                        canonical.Products.Add(p);
+                    }
+                }
+
+                // Deactivate duplicate category.
+                dup.IsActive = false;
+                mergedCount++;
+            }
+        }
+
+        if (mergedCount > 0)
+        {
+            await context.SaveChangesAsync();
+        }
+
+        return mergedCount;
     }
 
     private static async Task EnsureRole(RoleManager<IdentityRole> roleManager, string roleName)

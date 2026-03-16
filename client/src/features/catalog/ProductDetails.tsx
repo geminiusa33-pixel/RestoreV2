@@ -385,6 +385,24 @@ export default function ProductDetails() {
     pushIfValue('Campaigns', product.campaigns.map(c => c.name));
   }
 
+  // Custom properties (admin-defined key/value pairs)
+  try {
+    const raw = product.customPropertiesJson;
+    if (raw && raw.trim().length > 0) {
+      const parsed = JSON.parse(raw) as Array<{ name?: unknown; value?: unknown }>;
+      if (Array.isArray(parsed)) {
+        for (const p of parsed) {
+          const name = String(p?.name ?? '').trim();
+          const value = String(p?.value ?? '').trim();
+          if (!name) continue;
+          pushIfValue(name, value);
+        }
+      }
+    }
+  } catch {
+    // ignore malformed JSON
+  }
+
   // metadata
   pushIfValue('Criado em', product.createdAt);
   pushIfValue('Atualizado em', product.updatedAt);

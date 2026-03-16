@@ -10,6 +10,7 @@ import ScrollToTop from "./ScrollToTop";
 import { CookieConsentProvider } from "./cookieConsent";
 import type { Theme } from '@mui/material/styles';
 import { useGetUiSettingsQuery } from "../../features/admin/uiSettingsApi";
+import ChatWidget from "../../features/chat/ChatWidget";
 
 
 function App() {
@@ -139,6 +140,7 @@ function App() {
               <Outlet />
             </Container>
           </Box>
+          <ChatWidget />
           <Footer />
         </Box>
       </CookieConsentProvider>

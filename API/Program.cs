@@ -4,6 +4,8 @@ using API.Entities;
 using API.Middleware;
 using API.RequestHelpers;
 using API.Services;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -13,6 +15,8 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("EmailSettings"));
 builder.Services.Configure<InvoicingSettings>(builder.Configuration.GetSection("InvoicingSettings"));
+builder.Services.Configure<API.Services.Chatbot.ChatbotSettings>(builder.Configuration.GetSection("Chatbot"));
+builder.Services.Configure<API.Services.Chatbot.AnthropicSettings>(builder.Configuration.GetSection("Anthropic"));
 builder.Services.AddScoped<IEmailService, SendGridEmailService>();
 builder.Services.AddScoped<INewsletterSender, SendGridNewsletterSender>();
 builder.Services.AddHostedService<NewsletterDispatcher>();
@@ -45,6 +49,26 @@ builder.Services.AddScoped<API.Services.Invoicing.ITaxInvoiceService, API.Servic
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<AccountDeletionService>();
 builder.Services.AddScoped<StripeReversalService>();
+
+builder.Services.AddRateLimiter(options =>
+{
+    // Basic abuse protection for public endpoints (chatbot).
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter("chat", opt =>
+    {
+        opt.PermitLimit = 30;
+        opt.Window = TimeSpan.FromMinutes(10);
+        opt.QueueLimit = 0;
+    });
+});
+
+builder.Services.AddHttpClient("anthropic", client =>
+{
+    client.BaseAddress = new Uri("https://api.anthropic.com");
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+
+builder.Services.AddScoped<API.Services.Chatbot.IChatbotService, API.Services.Chatbot.AnthropicChatbotService>();
 builder.Services.AddIdentityApiEndpoints<User>(opt =>
 {
     opt.User.RequireUniqueEmail = true;
@@ -102,6 +126,8 @@ app.UseCors(opt =>
         .AllowCredentials()
         .WithOrigins(origins);
 });
+
+    app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();

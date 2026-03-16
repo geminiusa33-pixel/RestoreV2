@@ -139,7 +139,7 @@ export const catalogApi = createApi({
         fetchFilters: builder.query<{
             generos: string[];
             anos: number[];
-            categories?: { id: number; name: string; slug?: string; isActive?: boolean }[];
+            categories?: { id: number; name: string; slug?: string; isActive?: boolean; parentCategoryId?: number | null }[];
             campaigns?: { id: number; name: string; slug?: string; isActive?: boolean }[];
             marcas?: string[];
             modelos?: string[];

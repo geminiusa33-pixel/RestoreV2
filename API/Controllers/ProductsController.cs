@@ -40,6 +40,13 @@ namespace API.Controllers
             public string? DescriptionOverride { get; set; }
         }
 
+        private sealed class PropertyUpsert
+        {
+            public int? CategoryId { get; set; }
+            public string? Name { get; set; }
+            public string? Value { get; set; }
+        }
+
         [HttpGet]
         public async Task<ActionResult<List<Product>>> GetProducts(
             [FromQuery] ProductParams productParams)
@@ -520,6 +527,8 @@ namespace API.Controllers
         [HttpGet("filters")]
         public async Task<IActionResult> GetFilters()
         {
+            var isAdmin = User?.Identity?.IsAuthenticated == true && User.IsInRole("Admin");
+
             // return distinct generos and publication years available for filters
             var generos = await context.Products
                 .Where(p => p.Genero != null)
@@ -537,11 +546,16 @@ namespace API.Controllers
             // include available categories and campaigns for filter UI
             var categories = await context.Categories
                 .Where(c => c.IsActive)
-                .Select(c => new { c.Id, c.Name, c.Slug, c.IsActive })
+                // Customers: only categories with published products.
+                // Admin: categories with any products (drafts included).
+                // Soft-deleted products are excluded by the Product global query filter.
+                .Where(c => isAdmin ? c.Products!.Any() : c.Products!.Any(p => p.IsPublished))
+                .Select(c => new { c.Id, c.Name, c.Slug, c.IsActive, c.ParentCategoryId })
                 .ToListAsync();
 
             var campaigns = await context.Campaigns
                 .Where(c => c.IsActive)
+                .Where(c => isAdmin ? c.Products!.Any() : c.Products!.Any(p => p.IsPublished))
                 .Select(c => new { c.Id, c.Name, c.Slug, c.IsActive })
                 .ToListAsync();
 
@@ -727,6 +741,36 @@ namespace API.Controllers
                 product.Categories = await context.Categories
                     .Where(c => productDto.CategoryIds.Contains(c.Id))
                     .ToListAsync();
+            }
+
+            // Custom properties (free-form key/value pairs)
+            var propertiesJson = (productDto.PropertiesJson ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(propertiesJson))
+            {
+                List<PropertyUpsert>? props;
+                try
+                {
+                    props = JsonSerializer.Deserialize<List<PropertyUpsert>>(propertiesJson,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                }
+                catch
+                {
+                    return BadRequest("Invalid propertiesJson");
+                }
+
+                props ??= [];
+
+                var normalized = props
+                    .Select(p => new
+                    {
+                        categoryId = p.CategoryId,
+                        name = (p.Name ?? string.Empty).Trim(),
+                        value = (p.Value ?? string.Empty).Trim()
+                    })
+                    .Where(p => !string.IsNullOrWhiteSpace(p.name))
+                    .ToList();
+
+                product.CustomPropertiesJson = normalized.Count == 0 ? null : JsonSerializer.Serialize(normalized);
             }
 
             context.Products.Add(product);
@@ -946,6 +990,38 @@ namespace API.Controllers
                 product.QuantityInStock = product.Variants.Sum(x => x.QuantityInStock);
             }
 
+            // Handle custom properties update if provided.
+            // NOTE: ProductForm submits `propertiesJson` even when empty to allow clearing.
+            if (updateProductDto.PropertiesJson != null || (formData != null && formData.ContainsKey("propertiesJson_present")))
+            {
+                var propertiesJson = (updateProductDto.PropertiesJson ?? string.Empty).Trim();
+
+                List<PropertyUpsert>? props;
+                try
+                {
+                    props = JsonSerializer.Deserialize<List<PropertyUpsert>>(propertiesJson,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                }
+                catch
+                {
+                    return BadRequest("Invalid propertiesJson");
+                }
+
+                props ??= [];
+
+                var normalized = props
+                    .Select(p => new
+                    {
+                        categoryId = p.CategoryId,
+                        name = (p.Name ?? string.Empty).Trim(),
+                        value = (p.Value ?? string.Empty).Trim()
+                    })
+                    .Where(p => !string.IsNullOrWhiteSpace(p.name))
+                    .ToList();
+
+                product.CustomPropertiesJson = normalized.Count == 0 ? null : JsonSerializer.Serialize(normalized);
+            }
+
             // update campaigns/categories if provided. Also treat the presence of the
             // keys in the multipart form as an explicit update (even when empty)
             if (updateProductDto.CampaignIds != null || (formData != null && formData.ContainsKey("campaignIds_present")))
@@ -1009,44 +1085,131 @@ namespace API.Controllers
         }
 
         [Authorize(Roles = "Admin")]
+        [HttpPut("{id:int}/unpublish")]
+        public async Task<ActionResult> UnpublishProduct(int id)
+        {
+            var product = await context.Products
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(p => p.Id == id);
+            if (product == null) return NotFound();
+
+            if (product.IsPublished == false) return NoContent();
+
+            product.IsPublished = false;
+            product.UpdatedAt = DateTime.UtcNow;
+
+            var saved = await context.SaveChangesAsync() > 0;
+            if (!saved) return BadRequest("Problem unpublishing product");
+
+            return NoContent();
+        }
+
+        [Authorize(Roles = "Admin")]
         [HttpDelete("{id:int}")]
         public async Task<ActionResult> DeleteProduct(int id)
         {
             var product = await context.Products
-                .Include(p => p.Variants)
+                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(p => p.Id == id);
 
             if (product == null) return NotFound();
 
-            if (!string.IsNullOrEmpty(product.PublicId))
-                    await imageService.DeleteImageAsync(product.PublicId);
+            // Soft-delete: keep assets so we can restore within 15 days.
+            if (product.DeletedAt.HasValue) return NoContent();
 
-            // delete any variant images from Cloudinary
-            if (product.Variants != null && product.Variants.Count > 0)
+            var now = DateTime.UtcNow;
+            product.DeletedAt = now;
+            product.IsPublished = false;
+            product.UpdatedAt = now;
+
+            var saved = await context.SaveChangesAsync() > 0;
+            if (!saved) return BadRequest("Problem deleting the product");
+
+            return NoContent();
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpPost("{id:int}/restore")]
+        public async Task<ActionResult> RestoreProduct(int id)
+        {
+            var product = await context.Products
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(p => p.Id == id);
+
+            if (product == null) return NotFound();
+            if (!product.DeletedAt.HasValue) return BadRequest("Product is not deleted");
+
+            var deletedAt = product.DeletedAt.Value;
+            if (DateTime.UtcNow > deletedAt.AddMonths(2))
             {
-                foreach (var v in product.Variants)
-                {
-                    if (string.IsNullOrWhiteSpace(v.PublicId)) continue;
-                    try { await imageService.DeleteImageAsync(v.PublicId); } catch { }
-                }
+                return BadRequest("Restore window expired (2 months)");
             }
 
-            // delete any secondary images from Cloudinary
-            if (product.SecondaryImagePublicIds != null && product.SecondaryImagePublicIds.Any())
+            product.DeletedAt = null;
+            product.UpdatedAt = DateTime.UtcNow;
+
+            var saved = await context.SaveChangesAsync() > 0;
+            if (!saved) return BadRequest("Problem restoring the product");
+
+            return NoContent();
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpGet("deleted")]
+        public async Task<ActionResult> GetDeletedProducts([FromQuery] int days = 62)
+        {
+            var clamped = Math.Clamp(days, 1, 120);
+            var cutoff = DateTime.UtcNow.AddDays(-clamped);
+
+            var items = await context.Products
+                .IgnoreQueryFilters()
+                .Where(p => p.DeletedAt.HasValue && p.DeletedAt.Value >= cutoff)
+                .OrderByDescending(p => p.DeletedAt)
+                .Select(p => new { p.Id, p.Name, p.DeletedAt })
+                .ToListAsync();
+
+            return Ok(items);
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpPost("bulk-delete")]
+        public async Task<ActionResult> BulkDeleteProducts([FromBody] API.DTOs.BulkDeleteProductsDto dto)
+        {
+            if (dto == null) return BadRequest("Invalid payload");
+
+            var query = context.Products.AsQueryable();
+
+            if (dto.DeleteAll)
             {
-                foreach (var pid in product.SecondaryImagePublicIds.ToList())
-                {
-                    try { await imageService.DeleteImageAsync(pid); } catch { }
-                }
+                // keep query as-is
+            }
+            else if (dto.CategoryId.HasValue)
+            {
+                var cid = dto.CategoryId.Value;
+                query = query.Where(p => p.Categories!.Any(c => c.Id == cid));
+            }
+            else if (dto.ProductIds != null && dto.ProductIds.Count > 0)
+            {
+                var ids = dto.ProductIds.Distinct().ToList();
+                query = query.Where(p => ids.Contains(p.Id));
+            }
+            else
+            {
+                return BadRequest("Specify deleteAll, categoryId, or productIds");
             }
 
-            context.Products.Remove(product);
+            var now = DateTime.UtcNow;
+            var products = await query.ToListAsync();
+            foreach (var p in products)
+            {
+                if (p.DeletedAt.HasValue) continue;
+                p.DeletedAt = now;
+                p.IsPublished = false;
+                p.UpdatedAt = now;
+            }
 
-            var result = await context.SaveChangesAsync() > 0;
-
-            if (result) return Ok();
-
-            return BadRequest("Problem deleting the product");
+            await context.SaveChangesAsync();
+            return Ok(new { deleted = products.Count });
         }
     }
 }

@@ -4,6 +4,7 @@ import { Product } from "../../app/models/product";
 import { User } from "../../app/models/user";
 import { Campaign } from "../../app/models/campaign";
 import { Category } from "../../app/models/category";
+import { catalogApi } from "../catalog/catalogApi";
 
 export const adminApi = createApi({
     reducerPath: 'adminApi',
@@ -51,7 +52,13 @@ export const adminApi = createApi({
                 }
             }
         ,
-            invalidatesTags: ['Products','Filters']
+            invalidatesTags: ['Products','Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
         }),
         updateProduct: builder.mutation<void, {id: number, data: FormData}>({
             query: ({id, data}) => {
@@ -64,7 +71,13 @@ export const adminApi = createApi({
                 }
             }
         ,
-            invalidatesTags: (_result, _error, { id }) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters']
+            invalidatesTags: (_result, _error, { id }) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
         }),
         deleteProduct: builder.mutation<void, number>({
             query: (id: number) => {
@@ -74,14 +87,73 @@ export const adminApi = createApi({
                 }
             }
         ,
-            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters']
+            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
+        }),
+        bulkDeleteProducts: builder.mutation<{ deleted: number }, { deleteAll?: boolean; categoryId?: number; productIds?: number[] }>({
+            query: (payload) => ({
+                url: 'products/bulk-delete',
+                method: 'POST',
+                body: payload
+            }),
+            invalidatesTags: ['Products', 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
         }),
         publishProduct: builder.mutation<void, number>({
             query: (id: number) => ({
                 url: `products/${id}/publish`,
                 method: 'PUT'
             }),
-            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters']
+            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
+        }),
+        unpublishProduct: builder.mutation<void, number>({
+            query: (id: number) => ({
+                url: `products/${id}/unpublish`,
+                method: 'PUT'
+            }),
+            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
+        }),
+        getDeletedProducts: builder.query<Array<{ id: number; name: string; deletedAt: string }>, { days?: number } | void>({
+            query: (arg) => {
+                const days = (arg && 'days' in arg) ? arg.days : undefined;
+                return ({ url: 'products/deleted', params: days ? { days } : undefined });
+            },
+            providesTags: ['Products']
+        }),
+        restoreProduct: builder.mutation<void, number>({
+            query: (id: number) => ({
+                url: `products/${id}/restore`,
+                method: 'POST'
+            }),
+            invalidatesTags: (_result, _error, id) => [{ type: 'Products', id }, { type: 'Products', id: 'LIST' }, 'Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
         }),
         getCampaigns: builder.query<Campaign[], void>({
             query: () => ({ url: 'campaigns' }),
@@ -96,11 +168,24 @@ export const adminApi = createApi({
             invalidatesTags: ['Filters']
         }),
         getCategories: builder.query<Category[], void>({
+            query: () => ({ url: 'categories', params: { onlyWithProducts: true } }),
+            providesTags: ['Filters']
+        }),
+        cleanupUnusedCategories: builder.mutation<{ deactivated: number }, void>({
+            query: () => ({ url: 'categories/cleanup-unused', method: 'POST' }),
+            invalidatesTags: ['Filters'],
+            async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+                try {
+                    await queryFulfilled;
+                    dispatch(catalogApi.util.invalidateTags(['Filters']));
+                } catch { }
+            }
+        }),
+        getAllCategories: builder.query<Category[], void>({
             query: () => ({ url: 'categories' }),
             providesTags: ['Filters']
-        })
-        ,
-        createCategory: builder.mutation<Category, { name: string }>({
+        }),
+        createCategory: builder.mutation<Category, { name: string; parentCategoryId?: number | null }>({
             query: (payload) => ({ url: 'categories', method: 'POST', body: payload }),
             invalidatesTags: ['Filters']
         })
@@ -112,9 +197,15 @@ export const {
     useUpdateProductMutation,
     usePublishProductMutation,
     useDeleteProductMutation,
+    useBulkDeleteProductsMutation,
+    useUnpublishProductMutation,
+    useGetDeletedProductsQuery,
+    useRestoreProductMutation,
     useGetCampaignsQuery,
     useDeleteCampaignMutation,
     useGetCategoriesQuery,
+    useGetAllCategoriesQuery,
+    useCleanupUnusedCategoriesMutation,
     useCreateCampaignMutation,
     useCreateCategoryMutation,
     useGetUsersQuery,

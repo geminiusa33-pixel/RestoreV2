@@ -10,7 +10,6 @@ public class AnthropicChatbotService(
     IHttpClientFactory httpClientFactory,
     IOptions<AnthropicSettings> anthropicOptions,
     IOptions<ChatbotSettings> chatbotOptions,
-    IConfiguration config,
     IHostEnvironment env,
     ILogger<AnthropicChatbotService> logger) : IChatbotService
 {
@@ -26,17 +25,24 @@ public class AnthropicChatbotService(
             return "O chat está desativado de momento.";
         }
 
+        // TEMPORARY: Hardcode key for testing
+        var apiKey = "YOUR_API_KEY_HERE";
+        /*
         var apiKey =
             Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
             ?? settings.ApiKey
             ?? config["Anthropic:ApiKey"]
             ?? config["ANTHROPIC_API_KEY"];
+        */
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             logger.LogWarning("Anthropic API key is not configured (missing ANTHROPIC_API_KEY or Anthropic:ApiKey)");
             return "O chat ainda não está configurado. Por favor, contacte-nos por outros meios.";
         }
+
+        // Debug: log key health (first and last char, length)
+        logger.LogInformation("[DEBUG] API key loaded: length={Length}, starts={Start}, ends={End}", apiKey.Length, apiKey.Substring(0, Math.Min(10, apiKey.Length)), apiKey.Substring(Math.Max(0, apiKey.Length - 10)));
 
         var trimmed = (userMessage ?? string.Empty).Trim();
         if (trimmed.Length == 0)
@@ -55,24 +61,13 @@ public class AnthropicChatbotService(
 
         var requestBody = new AnthropicMessagesRequest
         {
-            Model = settings.Model,
+            Model = "claude-opus-4-6",
             MaxTokens = settings.MaxTokens,
             Temperature = settings.Temperature,
             System = systemPrompt,
             Messages =
             [
-                new AnthropicMessage
-                {
-                    Role = "user",
-                    Content =
-                    [
-                        new AnthropicContentBlock
-                        {
-                            Type = "text",
-                            Text = trimmed
-                        }
-                    ]
-                }
+                new AnthropicMessage { Role = "user", Content = trimmed }
             ]
         };
 
@@ -84,6 +79,7 @@ public class AnthropicChatbotService(
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
+        logger.LogInformation("[DEBUG] Sending Anthropic request: {JsonLength} bytes", json.Length);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -162,7 +158,7 @@ public class AnthropicChatbotService(
         public required string Role { get; set; }
 
         [JsonPropertyName("content")]
-        public required AnthropicContentBlock[] Content { get; set; }
+        public required string Content { get; set; }
     }
 
     private class AnthropicContentBlock

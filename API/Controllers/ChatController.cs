@@ -15,12 +15,12 @@ public class ChatController(IChatbotService chatbot) : ControllerBase
     [EnableRateLimiting("chat")]
     public async Task<ActionResult<ChatResponseDto>> Chat([FromBody] ChatRequestDto dto, CancellationToken cancellationToken)
     {
-        var message = dto.Message?.Trim() ?? string.Empty;
-
-        if (message.Length == 0)
+        if (dto == null || string.IsNullOrWhiteSpace(dto.Message))
         {
             return BadRequest("Mensagem em falta.");
         }
+
+        var message = dto.Message.Trim();
 
         var reply = await chatbot.GetReplyAsync(message, cancellationToken);
         return Ok(new ChatResponseDto { Reply = reply });
